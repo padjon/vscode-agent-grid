@@ -71,3 +71,18 @@ npm run compile
 ```
 
 Then press `F5` in VS Code to launch an Extension Development Host.
+
+## Local Install In WSL
+
+Build the extension and install it into the VS Code instance connected to this WSL environment:
+
+```bash
+npm install
+npm run install:wsl
+```
+
+This script:
+
+- compiles the extension
+- builds a `.vsix` with `vsce`
+- installs that `.vsix` through the WSL `code` CLI with `--force`

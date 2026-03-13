@@ -1,10 +1,14 @@
 {
   "name": "vscode-agent-grid",
-  "displayName": "agent-grid",
+  "displayName": "Agent Grid",
   "description": "An optimized tmux grid for CLI coding agents like Claude Code or OpenCode inside native VS Code terminals.",
   "version": "1.0.0",
   "publisher": "Q433951",
   "author": "Patrick Schäfer",
+  "repository": {
+    "type": "git",
+    "url": "git@atc-github.azure.cloud.bmw:q433951/vscode-agent-grid.git"
+  },
   "license": "MIT",
   "engines": {
     "vscode": "^1.88.0"
@@ -96,12 +100,15 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "npm run compile"
+    "package": "npm run compile",
+    "vsix": "npm run compile && vsce package",
+    "install": "npm run vsix && code --install-extension \"$(node -p \"const pkg=require('./package.json'); pkg.name + '-' + pkg.version + '.vsix'\")\" --force"
   },
   "dependencies": {},
   "devDependencies": {
     "@types/node": "^20.17.30",
     "@types/vscode": "^1.88.0",
+    "@vscode/vsce": "^3.7.1",
     "typescript": "^5.8.2"
   }
 }

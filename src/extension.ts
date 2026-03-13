@@ -1,5 +1,6 @@
 import * as os from 'os';
 import * as path from 'path';
+import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 
 const EXTENSION_NAMESPACE = 'agentGrid';
@@ -7,7 +8,7 @@ const CREATE_COMMAND = 'agentGrid.create';
 const SESSION_STATE_KEY = 'agentGrid.open';
 const TERMINAL_TITLE = 'agent-grid';
 const DEFAULT_WINDOW_NAME = 'grid';
-const PIN_EDITOR_COMMAND = 'workbench.action.pinEditor';
+const PIN_EDITOR_COMMANDS = ['workbench.action.pinEditor', 'workbench.action.keepEditor'];
 
 interface TerminalDefinition {
   name: string;
@@ -86,22 +87,34 @@ class AgentGridController implements vscode.Disposable {
       }
 
       if (action === 'Focus') {
-        existingTerminal.show(false);
+        await this.revealAndPinTerminal(existingTerminal, false);
         await this.context.workspaceState.update(SESSION_STATE_KEY, true);
         return;
       }
 
       recreate = true;
       await this.disposeTerminal(existingTerminal);
+    } else if (reason === 'manual' && (await this.hasDetachedTmuxSession(session))) {
+      const action = await vscode.window.showInformationMessage(
+        'The agent-grid workspace is still running in tmux.',
+        { modal: true },
+        'Attach',
+        'Recreate'
+      );
+
+      if (!action) {
+        return;
+      }
+
+      recreate = action === 'Recreate';
     } else if (reason === 'restore' && existingTerminal) {
-      existingTerminal.show(true);
+      await this.revealAndPinTerminal(existingTerminal, true);
       await this.context.workspaceState.update(SESSION_STATE_KEY, true);
       return;
     }
 
     const terminal = this.createTerminal();
-    terminal.show(reason === 'restore');
-    await vscode.commands.executeCommand(PIN_EDITOR_COMMAND);
+    await this.revealAndPinTerminal(terminal, reason === 'restore');
     terminal.sendText(this.buildBootstrapCommand(session, recreate), true);
     await this.context.workspaceState.update(SESSION_STATE_KEY, true);
   }
@@ -145,6 +158,78 @@ class AgentGridController implements vscode.Disposable {
       terminal.dispose();
       setTimeout(complete, 1000);
     });
+  }
+
+  private async hasDetachedTmuxSession(session: WorkspaceSession): Promise<boolean> {
+    if (this.findExistingTerminal()) {
+      return false;
+    }
+
+    const tmuxCommand = expandHomeDirectory(this.expandVariables(session.tmuxCommand).trim());
+    if (!tmuxCommand) {
+      return false;
+    }
+
+    return new Promise<boolean>((resolve) => {
+      execFile(tmuxCommand, ['has-session', '-t', session.sessionName], (error) => {
+        resolve(!error);
+      });
+    });
+  }
+
+  private async revealAndPinTerminal(terminal: vscode.Terminal, preserveFocus: boolean): Promise<void> {
+    const previousEditor = preserveFocus ? captureEditorState(vscode.window.activeTextEditor) : undefined;
+
+    terminal.show(false);
+    await this.waitForActiveTerminal(terminal);
+    await this.pinActiveEditor();
+
+    if (previousEditor) {
+      await vscode.window.showTextDocument(previousEditor.document, {
+        viewColumn: previousEditor.viewColumn,
+        preserveFocus: false,
+        selection: previousEditor.selection
+      });
+    }
+  }
+
+  private async waitForActiveTerminal(terminal: vscode.Terminal, timeoutMs = 1000): Promise<void> {
+    if (vscode.window.activeTerminal === terminal) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        changeListener.dispose();
+        timeout.dispose();
+        resolve();
+      };
+
+      const changeListener = vscode.window.onDidChangeActiveTerminal((activeTerminal) => {
+        if (activeTerminal === terminal) {
+          finish();
+        }
+      });
+
+      const timeout = setDisposableTimeout(finish, timeoutMs);
+    });
+  }
+
+  private async pinActiveEditor(): Promise<void> {
+    for (const command of PIN_EDITOR_COMMANDS) {
+      try {
+        await vscode.commands.executeCommand(command);
+        return;
+      } catch {
+        // Try the next command for compatibility across VS Code versions.
+      }
+    }
   }
 
   private getSessionFromSettings(): WorkspaceSession {
@@ -328,4 +413,25 @@ function expandHomeDirectory(value: string): string {
   }
 
   return value;
+}
+
+function setDisposableTimeout(callback: () => void, delay: number): vscode.Disposable {
+  const handle = setTimeout(callback, delay);
+  return new vscode.Disposable(() => {
+    clearTimeout(handle);
+  });
+}
+
+function captureEditorState(editor: vscode.TextEditor | undefined):
+  | { document: vscode.TextDocument; viewColumn: vscode.ViewColumn | undefined; selection: vscode.Selection }
+  | undefined {
+  if (!editor) {
+    return undefined;
+  }
+
+  return {
+    document: editor.document,
+    viewColumn: editor.viewColumn,
+    selection: editor.selection
+  };
 }
