@@ -1,0 +1,107 @@
+{
+  "name": "vscode-agent-grid",
+  "displayName": "agent-grid",
+  "description": "An optimized tmux grid for CLI coding agents like Claude Code or OpenCode inside native VS Code terminals.",
+  "version": "1.0.0",
+  "publisher": "Q433951",
+  "author": "Patrick Schäfer",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.88.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "terminal",
+    "agent-grid",
+    "tmux",
+    "claude-code",
+    "opencode",
+    "coding-agents"
+  ],
+  "activationEvents": [
+    "onCommand:agentGrid.create",
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentGrid.create",
+        "title": "Create or Recreate Workspace",
+        "category": "agent-grid"
+      }
+    ],
+    "configuration": {
+      "title": "agent-grid",
+      "properties": {
+        "agentGrid.tmuxCommand": {
+          "type": "string",
+          "default": "tmux",
+          "markdownDescription": "Tmux executable to run, for example `tmux` or a custom absolute path."
+        },
+        "agentGrid.terminals": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "markdownDescription": "Defines the four tmux panes in the fixed 2x2 grid. `startupCommand` runs only when the workspace is created fresh. `cwd` supports `${workspaceFolder}`, `${workspaceFolderBasename}`, and `${userHome}`.",
+          "default": [
+            {
+              "name": "Agent 1",
+              "startupCommand": "",
+              "cwd": "${workspaceFolder}"
+            },
+            {
+              "name": "Agent 2",
+              "startupCommand": "",
+              "cwd": "${workspaceFolder}"
+            },
+            {
+              "name": "Agent 3",
+              "startupCommand": "",
+              "cwd": "${workspaceFolder}"
+            },
+            {
+              "name": "Agent 4",
+              "startupCommand": "",
+              "cwd": "${workspaceFolder}"
+            }
+          ],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "default": "",
+                "markdownDescription": "Pane title shown by tmux."
+              },
+              "startupCommand": {
+                "type": "string",
+                "default": "",
+                "markdownDescription": "Command sent to the pane right after the tmux session is first created."
+              },
+              "cwd": {
+                "type": "string",
+                "default": "",
+                "markdownDescription": "Optional working directory for the pane. Relative paths resolve from the first workspace folder."
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npm run compile"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.17.30",
+    "@types/vscode": "^1.88.0",
+    "typescript": "^5.8.2"
+  }
+}
