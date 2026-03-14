@@ -1,67 +1,74 @@
 # Agent Grid
 
-Run multiple coding agents side by side in VS Code.
+[![CI](https://github.com/padjon/vscode-agent-grid/actions/workflows/ci.yml/badge.svg)](https://github.com/padjon/vscode-agent-grid/actions/workflows/ci.yml)
 
-Agent Grid turns one native terminal tab into a pinned tmux-backed `2x2` workspace, so Claude Code, OpenCode, tests, and project commands can all run in parallel without leaving your editor.
+Run terminal-first AI workflows inside one persistent VS Code workspace.
 
-![Agent Grid screenshot showing a pinned 2x2 terminal workspace inside VS Code](https://raw.githubusercontent.com/padjon/vscode-agent-grid/main/assets/marketplace-screenshot.png)
+Agent Grid turns one native terminal tab into a tmux-backed workspace for Claude Code, Codex, Gemini CLI, Aider, Goose, test runners, and project commands. It keeps each workflow in a fixed lane, restores the workspace when VS Code comes back, and stays inside the editor instead of pushing you into separate apps or scattered terminal tabs.
 
-## Popular Agent CLIs
+![Agent Grid hero showing a multi-agent terminal workspace inside VS Code](https://raw.githubusercontent.com/padjon/vscode-agent-grid/main/assets/marketplace-hero.png)
 
-Agent Grid is built for terminal-first workflows and fits naturally with the most popular coding-agent CLIs.
+## Why Install It
 
-Popularity below is inferred from GitHub stars on March 14, 2026:
+- Keep multiple agents and tasks visible at once inside VS Code
+- Reopen the same workspace quickly instead of rebuilding your terminal layout
+- Use committed workspace settings so a team can share the same setup
+- Stay terminal-native with tmux instead of moving to a custom webview UI
 
-1. [Gemini CLI](https://github.com/google-gemini/gemini-cli)
-2. [Claude Code](https://github.com/anthropics/claude-code)
-3. [OpenAI Codex CLI](https://github.com/openai/codex)
-4. [Aider](https://github.com/Aider-AI/aider)
-5. [Goose](https://github.com/block/goose)
-6. [OpenCode](https://github.com/opencode-ai/opencode)
+## Best Fit
 
-Whether you run one agent or mix several, Agent Grid gives each tool a fixed lane inside VS Code instead of scattering them across terminal tabs.
+Agent Grid is built for developers who already like terminal-first tools:
 
-## Why Agent Grid
-
-- Multi-agent workflow, one screen: keep four terminals visible in a stable grid instead of bouncing between tabs and windows
-- Built inside VS Code terminals: no custom webview, no separate app, no strange UI layer
-- Fast to reopen: restore the workspace on startup or recreate it in one command
-- Predictable layout: every pane has a defined role, name, startup command, and working directory
-- Great for real parallel work: one agent can work frontend, one backend, one tests, one ops
+- Claude Code
+- OpenAI Codex
+- Gemini CLI
+- Aider
+- Goose
+- your own test, lint, build, or ops commands
 
 ## What You Get
 
-- One command: `agent-grid: Create or Recreate Workspace`
 - One pinned VS Code terminal tab named `agent-grid`
-- One fixed `2x2` tmux grid inside that terminal
-- Optional startup commands for each pane when the workspace is created fresh
-- Automatic reattach flow when a tmux session is already running
-- Automatic restore on next VS Code start when the workspace was left open
+- A tmux-backed pane workspace with configurable layouts
+- Automatic attach when a matching tmux session already exists
+- Optional startup commands for each pane on fresh workspace creation
+- Restore on the next VS Code start when the workspace was left open
+- Built-in presets to bootstrap common agent and task layouts
 
-## Typical Setup
+## Real Workspace
 
-Agent Grid works best when each pane has a clear purpose:
+![Agent Grid screenshot showing a real tmux-backed terminal workspace inside VS Code](https://raw.githubusercontent.com/padjon/vscode-agent-grid/main/assets/marketplace-screenshot.png)
 
-- Frontend agent
-- Backend agent
-- Test runner
-- Infra, lint, or release tasks
+## Requirements
 
-Example `settings.json`:
+- `tmux` is required
+- Windows support is WSL-first. Native Windows terminals are not the target runtime for this extension
+
+If `tmux` is missing, Agent Grid will guide you toward the right install path for your environment.
+
+## Quick Start
+
+1. Install `tmux`
+2. Open a project in VS Code
+3. Run `Agent Grid: Run Setup Wizard`, `Agent Grid: Open Getting Started Guide`, or `Agent Grid: Apply Workspace Preset`
+4. Run `Agent Grid: Create or Recreate Workspace`
+
+## Example Configuration
 
 ```json
 {
+  "agentGrid.layout": "tiled",
   "agentGrid.tmuxCommand": "tmux",
   "agentGrid.terminals": [
     {
-      "name": "Frontend",
+      "name": "Claude",
       "startupCommand": "claude",
-      "cwd": "${workspaceFolder}/apps/frontend"
+      "cwd": "${workspaceFolder}"
     },
     {
-      "name": "Backend",
-      "startupCommand": "opencode",
-      "cwd": "${workspaceFolder}/apps/backend"
+      "name": "Codex",
+      "startupCommand": "codex",
+      "cwd": "${workspaceFolder}"
     },
     {
       "name": "Tests",
@@ -83,43 +90,153 @@ Supported placeholders inside `cwd` and `startupCommand`:
 - `${workspaceFolderBasename}`
 - `${userHome}`
 
-## Why It Feels Better Than Manual Tabs
+## Layouts
 
-When you work with multiple agents, the overhead is rarely the model. It is the window management.
+Available values for `agentGrid.layout`:
 
-Agent Grid removes that overhead:
+- `tiled`
+- `even-horizontal`
+- `even-vertical`
+- `main-horizontal`
+- `main-vertical`
 
-- no hunting for the right terminal tab
-- no rebuilding the same layout every morning
-- no losing the context of which pane does what
-- no tradeoff between staying in VS Code and getting tmux-grade pane control
+`tiled` is the default and produces the familiar `2x2` shape when four panes are configured.
 
-## Requirements
+## Startup Behavior
 
-- `tmux` must be installed and available on your `PATH`, or configured via `agentGrid.tmuxCommand`
+- `agentGrid.autoRestore`: reopen the workspace on the next VS Code start when it was left open
+- `agentGrid.promptOnboarding`: show or suppress the first-run setup prompt
+
+## Presets
+
+Built-in presets are included for:
+
+- Solo dev
+- Claude Code
+- OpenAI Codex
+- Gemini CLI
+- Aider
+- Goose
+- Mixed agent plus test workflow
+- Frontend, backend, tests, ops
+
+Use `Agent Grid: Apply Workspace Preset` to write one into your workspace settings.
+
+You can also define repository-specific reusable profiles in `agentGrid.profiles` and apply them later with `Agent Grid: Apply Saved Profile`.
+
+If you already have a workspace configuration you like, run `Agent Grid: Save Current Workspace As Profile` to append it to `agentGrid.profiles` in workspace settings.
+
+Example `agentGrid.profiles`:
+
+```json
+{
+  "agentGrid.profiles": [
+    {
+      "name": "Daily Solo",
+      "layout": "main-horizontal",
+      "terminals": [
+        {
+          "name": "Claude",
+          "startupCommand": "claude",
+          "cwd": "${workspaceFolder}"
+        },
+        {
+          "name": "Tests",
+          "startupCommand": "npm run test:watch",
+          "cwd": "${workspaceFolder}"
+        },
+        {
+          "name": "Shell",
+          "startupCommand": "",
+          "cwd": "${workspaceFolder}"
+        }
+      ]
+    },
+    {
+      "name": "Review Mode",
+      "layout": "tiled",
+      "terminals": [
+        {
+          "name": "Codex",
+          "startupCommand": "codex",
+          "cwd": "${workspaceFolder}"
+        },
+        {
+          "name": "Claude",
+          "startupCommand": "claude",
+          "cwd": "${workspaceFolder}"
+        },
+        {
+          "name": "Tests",
+          "startupCommand": "npm test",
+          "cwd": "${workspaceFolder}"
+        },
+        {
+          "name": "Shell",
+          "startupCommand": "",
+          "cwd": "${workspaceFolder}"
+        }
+      ]
+    }
+  ]
+}
+```
+
+## Commands
+
+- `Agent Grid: Create or Recreate Workspace`
+- `Agent Grid: Run Setup Wizard`
+- `Agent Grid: Open Getting Started Guide`
+- `Agent Grid: Apply Workspace Preset`
+- `Agent Grid: Apply Saved Profile`
+- `Agent Grid: Show Actions`
+- `Agent Grid: Focus Next Pane`
+- `Agent Grid: Focus Previous Pane`
+- `Agent Grid: Restart Active Pane`
+- `Agent Grid: Broadcast Command To All Panes`
+- `Agent Grid: Save Current Workspace As Profile`
+- `Agent Grid: Run Environment Check`
 
 ## Command Behavior
 
-`agent-grid: Create or Recreate Workspace`
+`Agent Grid: Create or Recreate Workspace`
 
-- Creates the tmux workspace if it does not exist yet
-- If the `agent-grid` tab is already open, asks whether to focus it or recreate it
-- If the tmux session is still running without the terminal tab, offers to attach or recreate
-- When recreating, destroys the old tmux session and rebuilds the full grid
+- creates the tmux workspace if it does not exist yet
+- focuses the existing terminal tab when it is already open
+- offers to attach when the tmux session is still running without the tab
+- rebuilds the session when you choose recreate
 
-## Best Use Cases
+`Agent Grid: Run Environment Check`
 
-- Running multiple AI coding agents in parallel
-- Splitting frontend, backend, and test workflows into fixed lanes
-- Keeping an always-on command pane for lint, builds, or deploy tasks
-- Sharing a consistent team setup through committed workspace settings
+- writes the current environment, tmux detection, layout, and session state into the `Agent Grid` output channel
+- helps users diagnose missing tmux, wrong runtime, or detached-session states
+
+`Agent Grid: Run Setup Wizard`
+
+- detects common agent CLIs such as Claude, Codex, Gemini, Aider, and Goose
+- recommends a starter preset based on what is installed
+- can immediately create the workspace or save the result as a reusable profile
+
+`Agent Grid: Open Getting Started Guide`
+
+- opens the built-in walkthrough from the VS Code walkthrough UI
+- gives first-time users a guided path through setup, creation, and profile saving
 
 ## Development
 
 ```bash
 npm install
 npm run compile
+npm test
+npm run test:smoke
 ```
+
+## Release Checklist
+
+- run `npm test`
+- run `npm run test:smoke`
+- run `npm run vsix`
+- manually verify setup wizard, create workspace, restore, profile save/apply, and diagnostics in a real VS Code session
 
 Then press `F5` in VS Code to launch an Extension Development Host.
 
@@ -131,12 +248,6 @@ Build the extension and install it into the VS Code instance connected to this W
 npm install
 npm run install:wsl
 ```
-
-This script:
-
-- compiles the extension
-- builds a `.vsix` with `vsce`
-- installs that `.vsix` through the WSL `code` CLI with `--force`
 
 ## Publish To Marketplace
 

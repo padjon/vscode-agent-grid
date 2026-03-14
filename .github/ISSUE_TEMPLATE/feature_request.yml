@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest an improvement for Agent Grid
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      placeholder: Describe the workflow gap or friction.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What change would help?
+      placeholder: Describe the command, setting, layout, or workflow you want.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      placeholder: Include runtime details like WSL, Linux, tmux version, or related agent CLIs when relevant.

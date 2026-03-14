@@ -1,7 +1,7 @@
 {
   "name": "vscode-agent-grid",
-  "displayName": "Agent Grid",
-  "description": "Multi-agent grid for VS Code terminals. Run Claude Code, OpenCode, and other CLI agents side by side in a pinned 2x2 workspace.",
+  "displayName": "Agent Grid: AI Terminal Workspace",
+  "description": "Run Claude Code, Codex, Gemini CLI, Aider, Goose, and your own commands side by side in a persistent tmux-backed VS Code terminal workspace.",
   "version": "1.0.4",
   "publisher": "padjon",
   "author": "Patrick Schäfer",
@@ -10,6 +10,9 @@
     "url": "https://github.com/padjon/vscode-agent-grid.git"
   },
   "homepage": "https://github.com/padjon/vscode-agent-grid#readme",
+  "sponsor": {
+    "url": "https://github.com/sponsors/padjon"
+  },
   "bugs": {
     "url": "https://github.com/padjon/vscode-agent-grid/issues"
   },
@@ -18,20 +21,30 @@
     "vscode": "^1.88.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Machine Learning"
   ],
   "keywords": [
-    "multi-agent",
-    "vscode",
-    "terminal",
-    "terminal-grid",
     "agent-grid",
+    "multi-agent",
+    "multi terminal",
+    "terminal workspace",
+    "terminal-grid",
     "tmux",
-    "ai-agents",
+    "ai coding",
+    "ai coding agent",
+    "developer tools",
+    "wsl",
     "claude-code",
-    "opencode",
-    "coding-agents"
+    "codex",
+    "gemini-cli",
+    "aider",
+    "goose"
   ],
+  "galleryBanner": {
+    "color": "#0f5c6e",
+    "theme": "dark"
+  },
   "activationEvents": [
     "onCommand:agentGrid.create",
     "onStartupFinished"
@@ -43,22 +56,144 @@
       {
         "command": "agentGrid.create",
         "title": "Create or Recreate Workspace",
-        "category": "agent-grid"
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.setupPreset",
+        "title": "Apply Workspace Preset",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.showActions",
+        "title": "Show Actions",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.applyProfile",
+        "title": "Apply Saved Profile",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.focusNextPane",
+        "title": "Focus Next Pane",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.focusPreviousPane",
+        "title": "Focus Previous Pane",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.restartActivePane",
+        "title": "Restart Active Pane",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.broadcastCommand",
+        "title": "Broadcast Command To All Panes",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.diagnose",
+        "title": "Run Environment Check",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.saveProfile",
+        "title": "Save Current Workspace As Profile",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.setupWizard",
+        "title": "Run Setup Wizard",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.openWalkthrough",
+        "title": "Open Getting Started Guide",
+        "category": "Agent Grid"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "getting-started",
+        "title": "Get Started With Agent Grid",
+        "description": "Set up a tmux-backed AI terminal workspace inside VS Code.",
+        "steps": [
+          {
+            "id": "run-setup-wizard",
+            "title": "Run The Setup Wizard",
+            "description": "Detect common agent CLIs and apply a recommended starter layout for this workspace.",
+            "media": {
+              "image": "assets/marketplace-hero.png",
+              "altText": "Agent Grid hero visual showing multiple agent panes inside VS Code"
+            },
+            "completionEvents": [
+              "onCommand:agentGrid.setupWizard"
+            ]
+          },
+          {
+            "id": "create-workspace",
+            "title": "Create The Workspace",
+            "description": "Launch or reattach the tmux-backed workspace after choosing a preset or profile.",
+            "media": {
+              "image": "assets/marketplace-screenshot.png",
+              "altText": "Agent Grid workspace attached inside VS Code"
+            },
+            "completionEvents": [
+              "onCommand:agentGrid.create"
+            ]
+          },
+          {
+            "id": "save-profile",
+            "title": "Save A Reusable Profile",
+            "description": "Persist a good layout into `agentGrid.profiles` so the repo can reuse it later.",
+            "media": {
+              "image": "assets/icon.png",
+              "altText": "Agent Grid icon"
+            },
+            "completionEvents": [
+              "onCommand:agentGrid.saveProfile"
+            ]
+          }
+        ]
       }
     ],
     "configuration": {
-      "title": "agent-grid",
+      "title": "Agent Grid",
       "properties": {
+        "agentGrid.autoRestore": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Reopen the Agent Grid workspace on the next VS Code start when it was left open."
+        },
+        "agentGrid.promptOnboarding": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show the first-run Agent Grid onboarding prompt when the workspace has not been configured yet."
+        },
         "agentGrid.tmuxCommand": {
           "type": "string",
           "default": "tmux",
           "markdownDescription": "Tmux executable to run, for example `tmux` or a custom absolute path."
         },
+        "agentGrid.layout": {
+          "type": "string",
+          "enum": [
+            "tiled",
+            "even-horizontal",
+            "even-vertical",
+            "main-horizontal",
+            "main-vertical"
+          ],
+          "default": "tiled",
+          "markdownDescription": "Tmux layout applied after all panes are created. `tiled` works well for mixed agent workflows and creates a 2x2 grid when you configure four panes."
+        },
         "agentGrid.terminals": {
           "type": "array",
-          "minItems": 4,
-          "maxItems": 4,
-          "markdownDescription": "Defines the four tmux panes in the fixed 2x2 grid. `startupCommand` runs only when the workspace is created fresh. `cwd` supports `${workspaceFolder}`, `${workspaceFolderBasename}`, and `${userHome}`.",
+          "minItems": 1,
+          "maxItems": 8,
+          "markdownDescription": "Defines the tmux panes in the workspace. `startupCommand` runs only when the workspace is created fresh. `cwd` supports `${workspaceFolder}`, `${workspaceFolderBasename}`, and `${userHome}`.",
           "default": [
             {
               "name": "Agent 1",
@@ -102,6 +237,63 @@
               }
             }
           }
+        },
+        "agentGrid.profiles": {
+          "type": "array",
+          "markdownDescription": "Optional named workspace profiles that can be committed to the repository and applied later with `Agent Grid: Apply Saved Profile`.",
+          "default": [],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "terminals"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "markdownDescription": "Profile name shown in the command palette."
+              },
+              "layout": {
+                "type": "string",
+                "enum": [
+                  "tiled",
+                  "even-horizontal",
+                  "even-vertical",
+                  "main-horizontal",
+                  "main-vertical"
+                ],
+                "default": "tiled",
+                "markdownDescription": "Optional tmux layout for this profile."
+              },
+              "terminals": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "default": "",
+                      "markdownDescription": "Pane title shown by tmux."
+                    },
+                    "startupCommand": {
+                      "type": "string",
+                      "default": "",
+                      "markdownDescription": "Command sent to the pane right after the tmux session is first created."
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "default": "",
+                      "markdownDescription": "Optional working directory for the pane. Relative paths resolve from the first workspace folder."
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -109,6 +301,8 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test test/core.test.mjs",
+    "test:smoke": "npm run compile && node --test test/tmux-smoke.test.mjs",
     "vscode:prepublish": "npm run compile",
     "package": "npm run compile",
     "vsix": "vsce package --no-dependencies",
