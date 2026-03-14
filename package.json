@@ -1,13 +1,17 @@
 {
   "name": "vscode-agent-grid",
   "displayName": "Agent Grid",
-  "description": "An optimized tmux grid for CLI coding agents like Claude Code or OpenCode inside native VS Code terminals.",
-  "version": "1.0.0",
-  "publisher": "Q433951",
+  "description": "Multi-agent grid for VS Code terminals. Run Claude Code, OpenCode, and other CLI agents side by side in a pinned 2x2 workspace.",
+  "version": "1.0.4",
+  "publisher": "padjon",
   "author": "Patrick Schäfer",
   "repository": {
     "type": "git",
-    "url": "git@atc-github.azure.cloud.bmw:q433951/vscode-agent-grid.git"
+    "url": "https://github.com/padjon/vscode-agent-grid.git"
+  },
+  "homepage": "https://github.com/padjon/vscode-agent-grid#readme",
+  "bugs": {
+    "url": "https://github.com/padjon/vscode-agent-grid/issues"
   },
   "license": "MIT",
   "engines": {
@@ -17,9 +21,13 @@
     "Other"
   ],
   "keywords": [
+    "multi-agent",
+    "vscode",
     "terminal",
+    "terminal-grid",
     "agent-grid",
     "tmux",
+    "ai-agents",
     "claude-code",
     "opencode",
     "coding-agents"
@@ -29,6 +37,7 @@
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
+  "icon": "assets/icon.png",
   "contributes": {
     "commands": [
       {
@@ -100,9 +109,11 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
     "package": "npm run compile",
-    "vsix": "npm run compile && vsce package",
-    "install": "npm run vsix && code --install-extension \"$(node -p \"const pkg=require('./package.json'); pkg.name + '-' + pkg.version + '.vsix'\")\" --force"
+    "vsix": "vsce package --no-dependencies",
+    "publish:vsce": "vsce publish --no-dependencies",
+    "install:wsl": "npm run vsix && code --install-extension \"$(node -p \"const pkg=require('./package.json'); pkg.name + '-' + pkg.version + '.vsix'\")\" --force"
   },
   "dependencies": {},
   "devDependencies": {

@@ -1,0 +1,71 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="14" y1="8" x2="112" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#16324B"/>
+      <stop offset="0.55" stop-color="#0D1B2C"/>
+      <stop offset="1" stop-color="#09131F"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="20" y1="18" x2="108" y2="110" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38BDF8" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#2DD4BF" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#0F172A" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="paneTl" x1="28" y1="48" x2="58" y2="72" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#164E63"/>
+      <stop offset="1" stop-color="#0F766E"/>
+    </linearGradient>
+    <linearGradient id="paneTr" x1="70" y1="48" x2="100" y2="72" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7C2D12"/>
+      <stop offset="1" stop-color="#B45309"/>
+    </linearGradient>
+    <linearGradient id="paneBl" x1="28" y1="80" x2="58" y2="104" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#14532D"/>
+      <stop offset="1" stop-color="#15803D"/>
+    </linearGradient>
+    <linearGradient id="paneBr" x1="70" y1="80" x2="100" y2="104" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1D4ED8"/>
+      <stop offset="1" stop-color="#4338CA"/>
+    </linearGradient>
+    <filter id="shadow" x="6" y="6" width="116" height="116" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="7" stdDeviation="8" flood-color="#020617" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bg)"/>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#glow)"/>
+  <rect x="4.75" y="4.75" width="118.5" height="118.5" rx="27.25" stroke="white" stroke-opacity="0.08" stroke-width="1.5"/>
+
+  <g filter="url(#shadow)">
+    <rect x="16" y="16" width="96" height="96" rx="22" fill="#07111C" fill-opacity="0.82"/>
+    <rect x="16.75" y="16.75" width="94.5" height="94.5" rx="21.25" stroke="white" stroke-opacity="0.12" stroke-width="1.5"/>
+
+    <path d="M16 38C16 25.85 25.85 16 38 16H90C102.15 16 112 25.85 112 38V42H16V38Z" fill="white" fill-opacity="0.05"/>
+    <circle cx="30" cy="29" r="3" fill="#38BDF8"/>
+    <circle cx="40" cy="29" r="3" fill="#2DD4BF"/>
+    <circle cx="50" cy="29" r="3" fill="#F59E0B"/>
+
+    <rect x="24" y="48" width="34" height="24" rx="10" fill="url(#paneTl)"/>
+    <rect x="24.75" y="48.75" width="32.5" height="22.5" rx="9.25" stroke="white" stroke-opacity="0.12" stroke-width="1.5"/>
+
+    <rect x="70" y="48" width="34" height="24" rx="10" fill="url(#paneTr)"/>
+    <rect x="70.75" y="48.75" width="32.5" height="22.5" rx="9.25" stroke="white" stroke-opacity="0.12" stroke-width="1.5"/>
+
+    <rect x="24" y="80" width="34" height="24" rx="10" fill="url(#paneBl)"/>
+    <rect x="24.75" y="80.75" width="32.5" height="22.5" rx="9.25" stroke="white" stroke-opacity="0.12" stroke-width="1.5"/>
+
+    <rect x="70" y="80" width="34" height="24" rx="10" fill="url(#paneBr)"/>
+    <rect x="70.75" y="80.75" width="32.5" height="22.5" rx="9.25" stroke="white" stroke-opacity="0.12" stroke-width="1.5"/>
+
+    <path d="M34 55L39.5 60L34 65" stroke="white" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M43 65H49" stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path d="M78 55L83.5 60L78 65" stroke="white" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M87 65H93" stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path d="M34 87L39.5 92L34 97" stroke="white" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M43 97H49" stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path d="M78 87L83.5 92L78 97" stroke="white" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M87 97H93" stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+</svg>
