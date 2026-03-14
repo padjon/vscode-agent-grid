@@ -34,6 +34,7 @@ import type {
 
 const EXTENSION_NAMESPACE = 'agentGrid';
 const SIDEBAR_VIEW_ID = 'agentGrid.sidebar';
+const CONFIGURE_WORKSPACE_COMMAND = 'agentGrid.configureWorkspace';
 const CREATE_COMMAND = 'agentGrid.create';
 const SETUP_PRESET_COMMAND = 'agentGrid.setupPreset';
 const SHOW_ACTIONS_COMMAND = 'agentGrid.showActions';
@@ -145,6 +146,13 @@ interface AgentGridSidebarNode {
   children?: AgentGridSidebarNode[];
 }
 
+type ConfigurationDestination = 'repo' | 'workspace' | 'user';
+
+interface ConfigurationTemplate {
+  layout: LayoutName;
+  terminals: TerminalDefinition[];
+}
+
 let controller: AgentGridController | undefined;
 
 class AgentGridController implements vscode.Disposable {
@@ -158,7 +166,7 @@ class AgentGridController implements vscode.Disposable {
   constructor(private readonly context: vscode.ExtensionContext) {
     this.outputChannel = vscode.window.createOutputChannel('Agent Grid');
     this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    this.statusBarItem.command = SHOW_ACTIONS_COMMAND;
+    this.statusBarItem.command = CONFIGURE_WORKSPACE_COMMAND;
     this.statusBarItem.show();
     this.usageMetrics = new UsageMetricsService(context, this.outputChannel);
     this.sidebarProvider = new AgentGridSidebarProvider();
@@ -174,6 +182,9 @@ class AgentGridController implements vscode.Disposable {
       this.treeView,
       this.usageMetrics,
       ...(repoConfigWatcher ? [repoConfigWatcher] : []),
+      vscode.commands.registerCommand(CONFIGURE_WORKSPACE_COMMAND, async () => {
+        await this.configureWorkspace();
+      }),
       vscode.commands.registerCommand(CREATE_COMMAND, async () => {
         await this.openWorkspace('manual');
       }),
@@ -481,22 +492,35 @@ class AgentGridController implements vscode.Disposable {
   private async updateWorkspaceOverrides(
     values: Partial<Record<'tmuxCommand' | 'layout' | 'terminals' | 'profiles', unknown>>
   ): Promise<void> {
+    await this.updateConfigurationTarget(vscode.ConfigurationTarget.Workspace, values);
+  }
+
+  private async updateUserDefaults(
+    values: Partial<Record<'tmuxCommand' | 'layout' | 'terminals' | 'profiles', unknown>>
+  ): Promise<void> {
+    await this.updateConfigurationTarget(vscode.ConfigurationTarget.Global, values);
+  }
+
+  private async updateConfigurationTarget(
+    target: vscode.ConfigurationTarget,
+    values: Partial<Record<'tmuxCommand' | 'layout' | 'terminals' | 'profiles', unknown>>
+  ): Promise<void> {
     const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
 
     if ('tmuxCommand' in values) {
-      await config.update('tmuxCommand', values.tmuxCommand, vscode.ConfigurationTarget.Workspace);
+      await config.update('tmuxCommand', values.tmuxCommand, target);
     }
 
     if ('layout' in values) {
-      await config.update('layout', values.layout, vscode.ConfigurationTarget.Workspace);
+      await config.update('layout', values.layout, target);
     }
 
     if ('terminals' in values) {
-      await config.update('terminals', values.terminals, vscode.ConfigurationTarget.Workspace);
+      await config.update('terminals', values.terminals, target);
     }
 
     if ('profiles' in values) {
-      await config.update('profiles', values.profiles, vscode.ConfigurationTarget.Workspace);
+      await config.update('profiles', values.profiles, target);
     }
   }
 
@@ -895,21 +919,120 @@ class AgentGridController implements vscode.Disposable {
     await vscode.commands.executeCommand('workbench.action.openWalkthrough', 'padjon.vscode-agent-grid#getting-started', false);
   }
 
-  private async runSetupWizard(): Promise<void> {
-    if (!vscode.workspace.workspaceFolders?.length) {
-      await vscode.window.showErrorMessage('Open a folder or workspace before running the Agent Grid setup wizard.');
+  private async configureWorkspace(initialDestination?: ConfigurationDestination): Promise<void> {
+    const destination = initialDestination ?? (await this.pickConfigurationDestination());
+    if (!destination) {
       return;
     }
 
-    const detectedAgents = await this.detectInstalledAgentCommands();
+    const hasWorkspace = Boolean(vscode.workspace.workspaceFolders?.length);
+    if (!hasWorkspace && destination !== 'user') {
+      await vscode.window.showErrorMessage('Open a folder or workspace before saving repo or workspace-specific Agent Grid settings.');
+      return;
+    }
+
     const projectInfo = this.inspectWorkspaceProject();
-    this.usageMetrics.record('setup_wizard', 'open');
+    const detectedAgents = await this.detectInstalledAgentCommands();
+    const currentSession = this.getSessionFromSettings();
+    const suggestedPresets = this.getSuggestedPresets(detectedAgents, projectInfo);
+    const choices: Array<
+      vscode.QuickPickItem & {
+        selectionMode: 'custom' | 'template';
+        template: ConfigurationTemplate;
+      }
+    > = [
+      {
+        label: 'Custom Setup',
+        description: 'Choose your own panes, commands, and layout',
+        template: {
+          layout: currentSession.layout,
+          terminals: currentSession.terminals
+        },
+        selectionMode: 'custom'
+      },
+      {
+        label: 'Use Current Setup',
+        description: `${currentSession.terminals.length} panes, ${currentSession.layout}`,
+        template: {
+          layout: currentSession.layout,
+          terminals: currentSession.terminals
+        },
+        selectionMode: 'template'
+      },
+      ...suggestedPresets.map((preset) => ({
+        label: preset.label,
+        description: preset.description,
+        template: {
+          layout: preset.layout,
+          terminals: preset.terminals
+        },
+        selectionMode: 'template' as const
+      }))
+    ];
+
+    const templateChoice = await vscode.window.showQuickPick(
+      choices,
+      {
+        placeHolder:
+          suggestedPresets.length > 0
+            ? 'Start with a custom setup or a suggestion that matches the CLIs detected in this workspace'
+            : 'Start with a custom setup or reuse the current Agent Grid configuration'
+      }
+    );
+
+    if (!templateChoice) {
+      return;
+    }
+
+    const template =
+      templateChoice.selectionMode === 'custom'
+        ? await this.collectCustomConfiguration(templateChoice.template)
+        : templateChoice.template;
+
+    if (!template) {
+      return;
+    }
+
+    await this.saveConfigurationTemplate(destination, template);
+  }
+
+  private async pickConfigurationDestination(): Promise<ConfigurationDestination | undefined> {
+    const picked = await vscode.window.showQuickPick(
+      [
+        {
+          label: 'This Repo',
+          description: `Save to ${REPO_CONFIG_FILE} so the repo can share the setup`,
+          destination: 'repo' as const
+        },
+        {
+          label: 'This VS Code Workspace',
+          description: 'Save only for the current workspace',
+          destination: 'workspace' as const
+        },
+        {
+          label: 'My Default For All Workspaces',
+          description: 'Save as user settings and use it as the base config everywhere',
+          destination: 'user' as const
+        }
+      ],
+      {
+        placeHolder: 'Where should Agent Grid save this setup?'
+      }
+    );
+
+    return picked?.destination;
+  }
+
+  private getSuggestedPresets(detectedAgents: Set<string>, projectInfo: WorkspaceProjectInfo): WorkspacePreset[] {
+    const generatedPresets: WorkspacePreset[] = [];
     const presetIds = new Set<string>();
 
-    presetIds.add('solo-dev');
+    const detectedAgentsPreset = this.buildDetectedAgentsPreset(detectedAgents, projectInfo);
+    if (detectedAgentsPreset) {
+      generatedPresets.push(detectedAgentsPreset);
+    }
 
-    if (detectedAgents.size >= 2) {
-      presetIds.add('mixed-agents');
+    if (detectedAgents.has('claude') && detectedAgents.has('codex')) {
       presetIds.add('claude-codex-tests');
     }
 
@@ -937,33 +1060,260 @@ class AgentGridController implements vscode.Disposable {
       presetIds.add('frontend-backend-tests-ops');
     }
 
-    const recommendedPresets = BUILTIN_PRESETS.filter((preset) => presetIds.has(preset.id));
-    const remainingPresets = BUILTIN_PRESETS.filter((preset) => !presetIds.has(preset.id));
+    if (presetIds.size === 0) {
+      presetIds.add('solo-dev');
+    }
+
+    return [
+      ...generatedPresets,
+      ...BUILTIN_PRESETS.filter((preset) => presetIds.has(preset.id)).map((preset) =>
+        this.adaptPresetToWorkspace(preset, projectInfo)
+      )
+    ];
+  }
+
+  private buildDetectedAgentsPreset(
+    detectedAgents: Set<string>,
+    projectInfo: WorkspaceProjectInfo
+  ): WorkspacePreset | undefined {
+    const ordered = ['claude', 'codex', 'gemini', 'aider', 'goose'].filter((command) => detectedAgents.has(command));
+    if (ordered.length < 2) {
+      return undefined;
+    }
+
+    const terminals = ordered.slice(0, 3).map((command) => ({
+      name: this.getAgentLabel(command),
+      startupCommand: command,
+      cwd: '${workspaceFolder}'
+    }));
+
+    if (terminals.length < 4) {
+      terminals.push({
+        name: projectInfo.preferredTestCommand ? 'Tests' : 'Shell',
+        startupCommand: projectInfo.preferredTestCommand ?? '',
+        cwd: '${workspaceFolder}'
+      });
+    }
+
+    return {
+      id: 'detected-agents',
+      label: 'Detected Agents Workspace',
+      description: `Uses the CLIs found here: ${ordered.join(', ')}`,
+      layout: terminals.length >= 4 ? 'tiled' : 'main-horizontal',
+      terminals
+    };
+  }
+
+  private getAgentLabel(command: string): string {
+    switch (command) {
+      case 'claude':
+        return 'Claude';
+      case 'codex':
+        return 'Codex';
+      case 'gemini':
+        return 'Gemini';
+      case 'aider':
+        return 'Aider';
+      case 'goose':
+        return 'Goose';
+      default:
+        return command;
+    }
+  }
+
+  private async collectCustomConfiguration(initial: ConfigurationTemplate): Promise<ConfigurationTemplate | undefined> {
+    const layout = await this.pickLayout(initial.layout);
+    if (!layout) {
+      return undefined;
+    }
+
+    const paneCount = await this.pickPaneCount(initial.terminals.length);
+    if (!paneCount) {
+      return undefined;
+    }
+
+    const terminals: TerminalDefinition[] = [];
+
+    for (let index = 0; index < paneCount; index += 1) {
+      const existing = initial.terminals[index];
+      const name = await vscode.window.showInputBox({
+        prompt: `Pane ${index + 1} name`,
+        value: existing?.name ?? `Pane ${index + 1}`,
+        ignoreFocusOut: true,
+        validateInput: (value) => (value.trim().length === 0 ? 'Pane name cannot be empty.' : undefined)
+      });
+
+      if (name === undefined) {
+        return undefined;
+      }
+
+      const startupCommand = await vscode.window.showInputBox({
+        prompt: `Pane ${index + 1} startup command`,
+        value: existing?.startupCommand ?? '',
+        placeHolder: 'Leave empty for a plain shell',
+        ignoreFocusOut: true
+      });
+
+      if (startupCommand === undefined) {
+        return undefined;
+      }
+
+      const cwd = await vscode.window.showInputBox({
+        prompt: `Pane ${index + 1} working directory`,
+        value: existing?.cwd ?? '${workspaceFolder}',
+        placeHolder: '${workspaceFolder}',
+        ignoreFocusOut: true
+      });
+
+      if (cwd === undefined) {
+        return undefined;
+      }
+
+      terminals.push({
+        name: name.trim(),
+        startupCommand: startupCommand.trim(),
+        cwd: cwd.trim() || undefined
+      });
+    }
+
+    return {
+      layout,
+      terminals: normalizeTerminalDefinitions(terminals)
+    };
+  }
+
+  private async pickLayout(initial: LayoutName): Promise<LayoutName | undefined> {
+    const layouts: Array<{ value: LayoutName; label: string; description: string }> = [
+      { value: 'tiled', label: 'Tiled', description: 'Balanced grid, good for 4-pane workspaces' },
+      { value: 'main-vertical', label: 'Main Vertical', description: 'Large left pane with smaller panes on the right' },
+      { value: 'main-horizontal', label: 'Main Horizontal', description: 'Large top pane with smaller panes below' },
+      { value: 'even-vertical', label: 'Even Vertical', description: 'Equal-width columns' },
+      { value: 'even-horizontal', label: 'Even Horizontal', description: 'Equal-height rows' }
+    ];
 
     const picked = await vscode.window.showQuickPick(
-      [
-        ...recommendedPresets.map((preset) => ({
-          label: preset.label,
-          description: `Recommended: ${this.adaptPresetToWorkspace(preset, projectInfo).description}`,
-          preset: this.adaptPresetToWorkspace(preset, projectInfo)
-        })),
-        ...remainingPresets.map((preset) => ({
-          label: preset.label,
-          description: this.adaptPresetToWorkspace(preset, projectInfo).description,
-          preset: this.adaptPresetToWorkspace(preset, projectInfo)
-        }))
-      ],
+      layouts.map((layout) => ({
+        label: layout.label,
+        description: layout.description,
+        detail: layout.value === initial ? 'Current selection' : undefined,
+        value: layout.value
+      })),
+      {
+        placeHolder: 'Choose a tmux layout'
+      }
+    );
+
+    return picked?.value;
+  }
+
+  private async pickPaneCount(initialCount: number): Promise<number | undefined> {
+    const counts = [1, 2, 3, 4, 5, 6];
+    const picked = await vscode.window.showQuickPick(
+      counts.map((count) => ({
+        label: `${count} pane${count === 1 ? '' : 's'}`,
+        description: count === initialCount ? 'Current selection' : undefined,
+        value: count
+      })),
+      {
+        placeHolder: 'How many panes should this setup have?'
+      }
+    );
+
+    return picked?.value;
+  }
+
+  private async saveConfigurationTemplate(
+    destination: ConfigurationDestination,
+    template: ConfigurationTemplate
+  ): Promise<void> {
+    if (destination === 'repo') {
+      const writable = this.getWritableRepoConfig();
+      if (!writable) {
+        await vscode.window.showErrorMessage(`Fix ${REPO_CONFIG_FILE} before saving a repo-level setup.`);
+        return;
+      }
+
+      await this.writeRepoConfig({
+        ...writable.config,
+        layout: template.layout,
+        terminals: template.terminals
+      });
+    } else if (destination === 'workspace') {
+      await this.writeWorkspaceConfiguration(template.layout, template.terminals);
+    } else {
+      await this.updateUserDefaults({
+        layout: template.layout,
+        terminals: template.terminals
+      });
+    }
+
+    await this.context.workspaceState.update(ONBOARDING_KEY, true);
+    await this.refreshSurface();
+
+    const message =
+      destination === 'repo'
+        ? `Saved Agent Grid setup to ${REPO_CONFIG_FILE}.`
+        : destination === 'workspace'
+          ? 'Saved Agent Grid setup to this workspace.'
+          : 'Saved Agent Grid setup as your global default. Repo or workspace-specific settings still override it.';
+
+    const canCreateWorkspace = Boolean(vscode.workspace.workspaceFolders?.length);
+    const action = await vscode.window.showInformationMessage(message, ...(canCreateWorkspace ? ['Create Workspace'] : []));
+    if (action === 'Create Workspace') {
+      await this.openWorkspace('manual');
+    }
+  }
+
+  private async runSetupWizard(): Promise<void> {
+    if (!vscode.workspace.workspaceFolders?.length) {
+      await vscode.window.showErrorMessage('Open a folder or workspace before running the Agent Grid setup wizard.');
+      return;
+    }
+
+    const detectedAgents = await this.detectInstalledAgentCommands();
+    const projectInfo = this.inspectWorkspaceProject();
+    this.usageMetrics.record('setup_wizard', 'open');
+    const recommendedPresets = this.getSuggestedPresets(detectedAgents, projectInfo);
+    const setupChoices: Array<
+      vscode.QuickPickItem & {
+        custom?: true;
+        preset?: WorkspacePreset;
+      }
+    > = [
+      {
+        label: 'Custom Setup',
+        description: 'Choose your own panes, commands, and layout',
+        custom: true
+      },
+      ...recommendedPresets.map((preset) => ({
+        label: preset.label,
+        description: preset.description,
+        preset
+      }))
+    ];
+
+    const picked = await vscode.window.showQuickPick(
+      setupChoices,
       {
         placeHolder:
           detectedAgents.size > 0
             ? `Detected agent CLIs: ${Array.from(detectedAgents).join(', ')}`
             : projectInfo.availableScripts.size > 0
               ? `Detected package scripts: ${Array.from(projectInfo.availableScripts).slice(0, 3).join(', ')}`
-              : 'Choose a starter layout for Agent Grid'
+              : 'Choose a starter layout or custom setup for Agent Grid'
       }
     );
 
     if (!picked) {
+      return;
+    }
+
+    if ('custom' in picked && picked.custom) {
+      await this.configureWorkspace('workspace');
+      return;
+    }
+
+    if (!picked.preset) {
       return;
     }
 
@@ -1337,6 +1687,13 @@ class AgentGridController implements vscode.Disposable {
 
     items.push(
       {
+        label: 'Configure Workspace',
+        description: 'Choose custom panes, commands, layout, and where to save the setup',
+        run: async () => {
+          await this.configureWorkspace();
+        }
+      },
+      {
         label: 'Create or Recreate Workspace',
         description: 'Start the tmux-backed workspace or reattach to it',
         run: async () => {
@@ -1345,7 +1702,7 @@ class AgentGridController implements vscode.Disposable {
       },
       {
         label: 'Apply Workspace Preset',
-        description: 'Write a preset layout into workspace settings',
+        description: 'Use one of the built-in starter layouts directly',
         run: async () => {
           await this.applyPreset();
         }
@@ -1516,7 +1873,7 @@ class AgentGridController implements vscode.Disposable {
         run: item.run
       })),
       {
-        placeHolder: 'Choose an Agent Grid action'
+        placeHolder: 'Choose an advanced Agent Grid action'
       }
     );
 
@@ -1916,6 +2273,7 @@ class AgentGridController implements vscode.Disposable {
     const environment = existingEnvironment ?? (await this.inspectEnvironment(session));
 
     if (environment.state === 'native-windows-unsupported') {
+      this.statusBarItem.command = CONFIGURE_WORKSPACE_COMMAND;
       this.statusBarItem.text = '$(warning) Agent Grid: WSL Required';
       this.statusBarItem.tooltip = environment.detail;
       this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
@@ -1923,6 +2281,7 @@ class AgentGridController implements vscode.Disposable {
     }
 
     if (environment.state === 'tmux-missing') {
+      this.statusBarItem.command = CONFIGURE_WORKSPACE_COMMAND;
       this.statusBarItem.text = '$(warning) Agent Grid: tmux Missing';
       this.statusBarItem.tooltip = environment.detail;
       this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
@@ -1932,19 +2291,22 @@ class AgentGridController implements vscode.Disposable {
     this.statusBarItem.backgroundColor = undefined;
 
     if (this.findExistingTerminal()) {
+      this.statusBarItem.command = CREATE_COMMAND;
       this.statusBarItem.text = '$(terminal) Agent Grid: Running';
       this.statusBarItem.tooltip = 'The agent-grid terminal is open.';
       return;
     }
 
     if (await this.hasDetachedTmuxSession(session)) {
+      this.statusBarItem.command = CREATE_COMMAND;
       this.statusBarItem.text = '$(plug) Agent Grid: Detached';
       this.statusBarItem.tooltip = 'A matching tmux session is running without the terminal tab attached.';
       return;
     }
 
+    this.statusBarItem.command = CONFIGURE_WORKSPACE_COMMAND;
     this.statusBarItem.text = '$(terminal) Agent Grid: Idle';
-    this.statusBarItem.tooltip = 'Run Agent Grid: Create or Recreate Workspace to start the tmux-backed workspace.';
+    this.statusBarItem.tooltip = 'Run Configure Workspace to edit your setup, or Create Workspace to launch it.';
   }
 
   private getEffectiveWorkspaceConfig(repoConfig: RepoConfig | undefined = this.getRepoConfigState().config) {
@@ -2224,92 +2586,172 @@ class UsageMetricsService implements vscode.Disposable {
 function buildSidebarNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
   const status = buildStatusNode(snapshot);
   const workspaceActions = buildWorkspaceActionNodes();
-  const sessionNodes = buildSessionNodes(snapshot);
-  const migrationNodes = buildMigrationNodes();
+  const currentSetupNodes = buildCurrentSetupNodes(snapshot);
   const supportNodes = buildSupportNodes();
-  const usageMetricNodes = buildUsageMetricNodes(snapshot);
-  const profileNodes = buildProfileNodes(snapshot);
-  const presetNodes = buildPresetNodes(snapshot);
-  const paneActionNodes = buildPaneActionNodes(snapshot);
-  const configuredPaneNodes = buildConfiguredPaneNodes(snapshot.session);
-  const livePaneNodes = buildLivePaneNodes(snapshot);
+  const advancedNodes = buildAdvancedNodes(snapshot);
 
   return [
     status,
-    buildSectionNode('workspace', 'Workspace', 'Core actions and setup', new vscode.ThemeIcon('terminal'), workspaceActions),
     buildSectionNode(
-      'session',
-      'Session',
-      `${snapshot.session.sessionName} • ${snapshot.configSourceLabel}`,
-      new vscode.ThemeIcon('layers'),
-      sessionNodes
+      'workspace',
+      'Workspace',
+      'Configure, create, and re-run the main setup flow',
+      new vscode.ThemeIcon('terminal'),
+      workspaceActions
     ),
     buildSectionNode(
-      'repo-config',
-      'Repo Config',
-      snapshot.repoConfig.exists ? REPO_CONFIG_FILE : `Create ${REPO_CONFIG_FILE} in the repo root`,
-      new vscode.ThemeIcon('file-code'),
-      buildRepoConfigNodes(snapshot)
-    ),
-    buildSectionNode(
-      'migration',
-      'Migration',
-      'Move between repo config and local workspace overrides',
-      new vscode.ThemeIcon('sync'),
-      migrationNodes
-    ),
-    buildSectionNode(
-      'usage-metrics',
-      'Usage Metrics',
-      snapshot.usageMetrics.active
-        ? `${snapshot.usageMetrics.totalEvents} events captured locally`
-        : 'Disabled by default, exportable when enabled',
-      new vscode.ThemeIcon('graph'),
-      usageMetricNodes
+      'current-setup',
+      'Current Setup',
+      `${snapshot.session.terminals.length} panes • ${snapshot.session.layout} • ${snapshot.configSourceLabel}`,
+      new vscode.ThemeIcon('list-unordered'),
+      currentSetupNodes
     ),
     buildSectionNode(
       'support',
       'Support',
-      'Export a support bundle or open the issue tracker',
+      'Diagnostics, support bundle, GitHub issues, and email feedback',
       new vscode.ThemeIcon('comment-discussion'),
-      supportNodes
+      supportNodes,
+      vscode.TreeItemCollapsibleState.Collapsed
     ),
     buildSectionNode(
-      'profiles',
-      'Profiles',
-      snapshot.profiles.length > 0 ? `${snapshot.profiles.length} saved` : 'Save and reuse workspace setups',
-      new vscode.ThemeIcon('bookmark'),
-      profileNodes
-    ),
-    buildSectionNode(
-      'presets',
-      'Presets',
-      `${snapshot.presets.length} built-in layouts`,
-      new vscode.ThemeIcon('library'),
-      presetNodes
-    ),
-    buildSectionNode(
-      'pane-actions',
-      'Pane Actions',
-      snapshot.terminalOpen || snapshot.detached ? 'Operate on the live tmux workspace' : 'Create the workspace to enable',
-      new vscode.ThemeIcon('run-all'),
-      paneActionNodes
-    ),
-    buildSectionNode(
-      'live-panes',
-      'Live Panes',
-      snapshot.livePanes.length > 0 ? `${snapshot.livePanes.length} panes reported by tmux` : 'Create the workspace to inspect tmux pane state',
-      new vscode.ThemeIcon('pulse'),
-      livePaneNodes
-    ),
-    buildSectionNode(
-      'configured-panes',
-      'Configured Panes',
-      `${snapshot.session.terminals.length} panes in ${snapshot.session.layout}`,
-      new vscode.ThemeIcon('list-unordered'),
-      configuredPaneNodes
+      'advanced',
+      'Advanced',
+      'Profiles, presets, repo config, migration, live pane actions, and usage reports',
+      new vscode.ThemeIcon('tools'),
+      advancedNodes,
+      vscode.TreeItemCollapsibleState.Collapsed
     )
   ];
+}
+
+function buildCurrentSetupNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
+  return [
+    buildLeafNode(
+      'setup-source',
+      'Config Source',
+      snapshot.configSourceLabel,
+      `tmuxCommand=${snapshot.effectiveConfigLayers.tmuxCommand}, layout=${snapshot.effectiveConfigLayers.layout}, terminals=${snapshot.effectiveConfigLayers.terminals}, profiles=${snapshot.effectiveConfigLayers.profiles}`,
+      new vscode.ThemeIcon('layers'),
+      CONFIGURE_WORKSPACE_COMMAND
+    ),
+    buildLeafNode(
+      'setup-layout',
+      'Layout',
+      snapshot.session.layout,
+      'Run Configure Workspace to change the layout and pane list.',
+      new vscode.ThemeIcon('layout-panel'),
+      CONFIGURE_WORKSPACE_COMMAND
+    ),
+    buildLeafNode(
+      'setup-pane-count',
+      'Panes',
+      String(snapshot.session.terminals.length),
+      'Run Configure Workspace to add, remove, or change panes.',
+      new vscode.ThemeIcon('split-horizontal'),
+      CONFIGURE_WORKSPACE_COMMAND
+    ),
+    ...buildConfiguredPaneNodes(snapshot.session)
+  ];
+}
+
+function buildAdvancedNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
+  const nodes: AgentGridSidebarNode[] = [
+    buildActionNode(
+      'advanced-show-actions',
+      'Open Advanced Actions',
+      'Open the full Agent Grid action list',
+      new vscode.ThemeIcon('list-selection'),
+      SHOW_ACTIONS_COMMAND
+    ),
+    buildActionNode(
+      'advanced-open-repo-config',
+      'Open Repo Config',
+      `Create or edit ${REPO_CONFIG_FILE} in the workspace root`,
+      new vscode.ThemeIcon('file-code'),
+      OPEN_REPO_CONFIG_COMMAND
+    ),
+    buildActionNode(
+      'advanced-apply-profile',
+      'Apply Saved Profile',
+      'Reuse a saved repo or workspace profile',
+      new vscode.ThemeIcon('bookmark'),
+      APPLY_PROFILE_COMMAND
+    ),
+    buildActionNode(
+      'advanced-apply-preset',
+      'Apply Workspace Preset',
+      'Use a built-in starter layout directly',
+      new vscode.ThemeIcon('library'),
+      SETUP_PRESET_COMMAND
+    ),
+    buildActionNode(
+      'advanced-save-profile',
+      'Save Current Workspace As Profile',
+      'Store the current setup as a reusable profile',
+      new vscode.ThemeIcon('add'),
+      SAVE_PROFILE_COMMAND
+    ),
+    buildActionNode(
+      'advanced-save-repo-workspace',
+      'Save Workspace To Repo Config',
+      `Write the current layout and panes into ${REPO_CONFIG_FILE}`,
+      new vscode.ThemeIcon('save'),
+      SAVE_WORKSPACE_TO_REPO_CONFIG_COMMAND
+    ),
+    buildActionNode(
+      'advanced-save-repo-profile',
+      'Save Profile To Repo Config',
+      `Append or update a named profile in ${REPO_CONFIG_FILE}`,
+      new vscode.ThemeIcon('bookmark'),
+      SAVE_PROFILE_TO_REPO_CONFIG_COMMAND
+    ),
+    buildActionNode(
+      'advanced-import-repo',
+      'Import Repo Config To Settings',
+      `Copy ${REPO_CONFIG_FILE} into workspace overrides`,
+      new vscode.ThemeIcon('cloud-download'),
+      IMPORT_REPO_CONFIG_TO_SETTINGS_COMMAND
+    ),
+    buildActionNode(
+      'advanced-migrate-repo',
+      'Migrate Settings To Repo Config',
+      `Move current workspace settings into ${REPO_CONFIG_FILE}`,
+      new vscode.ThemeIcon('cloud-upload'),
+      MIGRATE_SETTINGS_TO_REPO_CONFIG_COMMAND
+    ),
+    buildActionNode(
+      'advanced-clear-workspace',
+      'Clear Workspace Overrides',
+      'Remove local Agent Grid overrides and fall back to repo config or defaults',
+      new vscode.ThemeIcon('clear-all'),
+      CLEAR_WORKSPACE_OVERRIDES_COMMAND
+    ),
+    buildActionNode(
+      'advanced-export-usage',
+      'Export Usage Report',
+      'Open a JSON report with local aggregate event counts',
+      new vscode.ThemeIcon('export'),
+      EXPORT_USAGE_REPORT_COMMAND
+    ),
+    buildActionNode(
+      'advanced-reset-usage',
+      'Reset Usage Report',
+      'Clear the local usage counters stored in VS Code global state',
+      new vscode.ThemeIcon('trash'),
+      RESET_USAGE_REPORT_COMMAND
+    )
+  ];
+
+  if (snapshot.terminalOpen || snapshot.detached) {
+    nodes.push(...buildPaneActionNodes(snapshot));
+  }
+
+  if (snapshot.livePanes.length > 0) {
+    nodes.push(...buildLivePaneNodes(snapshot));
+  }
+
+  return nodes;
 }
 
 function buildSessionNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
@@ -2541,6 +2983,13 @@ function buildStatusNode(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNo
 function buildWorkspaceActionNodes(): AgentGridSidebarNode[] {
   return [
     buildActionNode(
+      'workspace-configure',
+      'Configure Workspace',
+      'Choose custom panes, commands, layout, and where to save the setup',
+      new vscode.ThemeIcon('edit'),
+      CONFIGURE_WORKSPACE_COMMAND
+    ),
+    buildActionNode(
       'workspace-create',
       'Create or Recreate Workspace',
       'Launch or reattach the tmux-backed workspace',
@@ -2550,52 +2999,16 @@ function buildWorkspaceActionNodes(): AgentGridSidebarNode[] {
     buildActionNode(
       'workspace-setup',
       'Run Setup Wizard',
-      'Detect common agent CLIs and apply a recommended layout',
+      'Show only relevant suggested layouts for detected CLIs, plus custom setup',
       new vscode.ThemeIcon('wand'),
       SETUP_WIZARD_COMMAND
     ),
     buildActionNode(
       'workspace-actions',
-      'Show Actions',
+      'Open Advanced Actions',
       'Open the full command menu for Agent Grid',
       new vscode.ThemeIcon('list-selection'),
       SHOW_ACTIONS_COMMAND
-    ),
-    buildActionNode(
-      'workspace-repo-config',
-      'Open Repo Config',
-      `Create or edit ${REPO_CONFIG_FILE} in the workspace root`,
-      new vscode.ThemeIcon('file-code'),
-      OPEN_REPO_CONFIG_COMMAND
-    ),
-    buildActionNode(
-      'workspace-save-repo-workspace',
-      'Save Workspace To Repo Config',
-      `Write the current layout and panes into ${REPO_CONFIG_FILE}`,
-      new vscode.ThemeIcon('save'),
-      SAVE_WORKSPACE_TO_REPO_CONFIG_COMMAND
-    ),
-    buildActionNode(
-      'workspace-save-repo-profile',
-      'Save Profile To Repo Config',
-      `Append or update a named profile in ${REPO_CONFIG_FILE}`,
-      new vscode.ThemeIcon('bookmark'),
-      SAVE_PROFILE_TO_REPO_CONFIG_COMMAND
-    ),
-    buildActionNode(
-      'workspace-diagnose',
-      'Run Environment Check',
-      'Write diagnostics and setup hints to the output channel',
-      new vscode.ThemeIcon('pulse'),
-      DIAGNOSE_COMMAND
-    ),
-    buildActionNode(
-      'workspace-settings',
-      'Open Settings',
-      'Review layout, panes, profiles, and tmux configuration',
-      new vscode.ThemeIcon('gear'),
-      'workbench.action.openSettings',
-      ['@ext:padjon.vscode-agent-grid agentGrid']
     )
   ];
 }
@@ -2783,7 +3196,8 @@ function buildConfiguredPaneNodes(session: WorkspaceSession): AgentGridSidebarNo
       startupCommand
         ? `Pane ${index + 1} starts in ${cwd} and runs "${startupCommand}" on fresh workspace creation.`
         : `Pane ${index + 1} starts in ${cwd}.`,
-      new vscode.ThemeIcon('terminal')
+      new vscode.ThemeIcon('terminal'),
+      CONFIGURE_WORKSPACE_COMMAND
     );
   });
 }
@@ -2793,7 +3207,8 @@ function buildSectionNode(
   label: string,
   description: string,
   icon: vscode.ThemeIcon,
-  children: AgentGridSidebarNode[]
+  children: AgentGridSidebarNode[],
+  collapsibleState: vscode.TreeItemCollapsibleState = vscode.TreeItemCollapsibleState.Expanded
 ): AgentGridSidebarNode {
   return {
     id,
@@ -2801,7 +3216,7 @@ function buildSectionNode(
     description,
     tooltip: description,
     icon,
-    collapsibleState: vscode.TreeItemCollapsibleState.Expanded,
+    collapsibleState,
     children
   };
 }

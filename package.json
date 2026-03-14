@@ -2,7 +2,7 @@
   "name": "vscode-agent-grid",
   "displayName": "Agent Grid: AI Terminal Workspace",
   "description": "Run Claude Code, Codex, Gemini CLI, Aider, Goose, and your own commands side by side in a persistent tmux-backed VS Code terminal workspace.",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "publisher": "padjon",
   "author": "Patrick Schäfer",
   "repository": {
@@ -55,53 +55,23 @@
   "contributes": {
     "commands": [
       {
+        "command": "agentGrid.configureWorkspace",
+        "title": "Configure Workspace",
+        "category": "Agent Grid"
+      },
+      {
         "command": "agentGrid.create",
         "title": "Create or Recreate Workspace",
         "category": "Agent Grid"
       },
       {
-        "command": "agentGrid.setupPreset",
-        "title": "Apply Workspace Preset",
-        "category": "Agent Grid"
-      },
-      {
         "command": "agentGrid.showActions",
-        "title": "Show Actions",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.applyProfile",
-        "title": "Apply Saved Profile",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.focusNextPane",
-        "title": "Focus Next Pane",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.focusPreviousPane",
-        "title": "Focus Previous Pane",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.restartActivePane",
-        "title": "Restart Active Pane",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.broadcastCommand",
-        "title": "Broadcast Command To All Panes",
+        "title": "Open Advanced Actions",
         "category": "Agent Grid"
       },
       {
         "command": "agentGrid.diagnose",
         "title": "Run Environment Check",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.saveProfile",
-        "title": "Save Current Workspace As Profile",
         "category": "Agent Grid"
       },
       {
@@ -112,36 +82,6 @@
       {
         "command": "agentGrid.openWalkthrough",
         "title": "Open Getting Started Guide",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.openRepoConfig",
-        "title": "Open Repo Config",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.saveWorkspaceToRepoConfig",
-        "title": "Save Workspace To Repo Config",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.saveProfileToRepoConfig",
-        "title": "Save Profile To Repo Config",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.importRepoConfigToSettings",
-        "title": "Import Repo Config To Settings",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.clearWorkspaceOverrides",
-        "title": "Clear Workspace Overrides",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.migrateSettingsToRepoConfig",
-        "title": "Migrate Settings To Repo Config",
         "category": "Agent Grid"
       },
       {
@@ -157,16 +97,6 @@
       {
         "command": "agentGrid.emailFeedback",
         "title": "Email Feedback",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.exportUsageReport",
-        "title": "Export Usage Report",
-        "category": "Agent Grid"
-      },
-      {
-        "command": "agentGrid.resetUsageReport",
-        "title": "Reset Usage Report",
         "category": "Agent Grid"
       }
     ],
@@ -190,41 +120,31 @@
     "viewsWelcome": [
       {
         "view": "agentGrid.sidebar",
-        "contents": "Create a tmux-backed workspace for Claude Code, Codex, Gemini CLI, Aider, Goose, and your own terminal workflows.\n[Run Setup Wizard](command:agentGrid.setupWizard)\n[Create Workspace](command:agentGrid.create)\n[Open Getting Started Guide](command:agentGrid.openWalkthrough)\n[Run Environment Check](command:agentGrid.diagnose)",
+        "contents": "Create a tmux-backed workspace for Claude Code, Codex, Gemini CLI, Aider, Goose, and your own terminal workflows.\n[Configure Workspace](command:agentGrid.configureWorkspace)\n[Create Workspace](command:agentGrid.create)\n[Run Setup Wizard](command:agentGrid.setupWizard)\n[Open Getting Started Guide](command:agentGrid.openWalkthrough)",
         "when": "agentGrid.showSidebarWelcome && agentGrid.hasWorkspaceFolder"
       },
       {
         "view": "agentGrid.sidebar",
-        "contents": "Open a folder or workspace to configure Agent Grid for this repository.",
+        "contents": "Open a folder or workspace to configure Agent Grid for this repository, or [Configure Workspace](command:agentGrid.configureWorkspace) to set your global defaults.",
         "when": "agentGrid.showSidebarWelcome && !agentGrid.hasWorkspaceFolder"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "agentGrid.create",
+          "command": "agentGrid.configureWorkspace",
           "when": "view == agentGrid.sidebar",
           "group": "navigation"
         },
         {
-          "command": "agentGrid.showActions",
+          "command": "agentGrid.create",
           "when": "view == agentGrid.sidebar",
           "group": "navigation@1"
         },
         {
-          "command": "agentGrid.diagnose",
+          "command": "agentGrid.showActions",
           "when": "view == agentGrid.sidebar",
           "group": "navigation@2"
-        },
-        {
-          "command": "agentGrid.exportUsageReport",
-          "when": "view == agentGrid.sidebar",
-          "group": "navigation@3"
-        },
-        {
-          "command": "agentGrid.exportSupportBundle",
-          "when": "view == agentGrid.sidebar",
-          "group": "navigation@4"
         }
       ]
     },

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.8
+
+- simplified the main UX around `Configure Workspace`, `Create Workspace`, `Current Setup`, and collapsed advanced actions
+- added a guided custom setup flow for pane count, pane names, commands, working directories, and tmux layout
+- added explicit save targets for repo config, workspace-only setup, and global defaults for all workspaces
+- made setup suggestions CLI-aware so they only reflect detected tools and project signals, with `Custom Setup` always available
+- replaced the sidebar activity icon with a proper monochrome glyph
+- reduced the contributed command surface so the Command Palette is less overwhelming
+
 ## 1.0.7
 
 - removed the unfinished remote telemetry path and kept usage observation local-only
