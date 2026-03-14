@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing, run `Agent Grid: Run Environment Check` and `Agent Grid: Export Support Bundle`. Include the relevant output if the issue is related to setup, tmux detection, WSL, attach, restore, or repo-config migration behavior.
+        Before filing, run `Agent Grid: Run Environment Check` and `Agent Grid: Export Support Bundle`, then choose `Safe for Public Issue`. Include the relevant output if the issue is related to setup, tmux detection, WSL, attach, restore, live pane state, or repo-config migration behavior.
   - type: input
     id: vscode
     attributes:

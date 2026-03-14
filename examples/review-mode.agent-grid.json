@@ -1,0 +1,25 @@
+{
+  "layout": "tiled",
+  "terminals": [
+    {
+      "name": "Codex",
+      "startupCommand": "codex",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Claude",
+      "startupCommand": "claude",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Tests",
+      "startupCommand": "npm test",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Shell",
+      "startupCommand": "",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

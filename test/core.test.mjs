@@ -1,12 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildSupportBundleMarkdown,
   buildTmuxBootstrapScript,
+  describeEffectiveConfigLayers,
   mergeProfiles,
   normalizeProfiles,
   normalizeTerminalDefinitions,
   parseRepoConfig,
+  redactPathForPublicReport,
   readLayoutName,
+  resolveEffectiveWorkspaceConfig,
   sanitizeTmuxName
 } from '../out/core.js';
 
@@ -134,4 +138,86 @@ test('mergeProfiles lets settings override repo defaults by name', () => {
   assert.equal(merged[0].layout, 'main-horizontal');
   assert.equal(merged[0].terminals[0].name, 'Codex');
   assert.equal(merged[1].name, 'Review');
+});
+
+test('resolveEffectiveWorkspaceConfig prefers workspace overrides over repo and user settings', () => {
+  const resolved = resolveEffectiveWorkspaceConfig({
+    workspace: {
+      layout: 'main-horizontal',
+      terminals: [{ name: 'Workspace Pane', startupCommand: '', cwd: '${workspaceFolder}' }]
+    },
+    repo: {
+      tmuxCommand: '/repo/tmux',
+      layout: 'tiled',
+      terminals: [{ name: 'Repo Pane', startupCommand: 'claude', cwd: '${workspaceFolder}' }],
+      profiles: [{ name: 'Repo Profile', layout: 'tiled', terminals: [{ name: 'Repo', startupCommand: '', cwd: '${workspaceFolder}' }] }]
+    },
+    user: {
+      tmuxCommand: '/user/tmux',
+      layout: 'main-vertical',
+      terminals: [{ name: 'User Pane', startupCommand: 'codex', cwd: '${workspaceFolder}' }],
+      profiles: [{ name: 'User Profile', layout: 'main-horizontal', terminals: [{ name: 'User', startupCommand: '', cwd: '${workspaceFolder}' }] }]
+    }
+  });
+
+  assert.equal(resolved.tmuxCommand, '/repo/tmux');
+  assert.equal(resolved.layout, 'main-horizontal');
+  assert.equal(resolved.terminals[0].name, 'Workspace Pane');
+  assert.equal(resolved.profiles.length, 2);
+  assert.equal(resolved.layers.tmuxCommand, 'repo');
+  assert.equal(resolved.layers.layout, 'workspace');
+  assert.equal(describeEffectiveConfigLayers(resolved.layers), 'repo config + workspace overrides');
+});
+
+test('redactPathForPublicReport removes absolute local details', () => {
+  assert.equal(redactPathForPublicReport('/home/alice/project', '/home/alice/project'), '<workspace>');
+  assert.equal(
+    redactPathForPublicReport('/home/alice/project/apps/frontend', '/home/alice/project'),
+    '<workspace>/apps/frontend'
+  );
+  assert.equal(redactPathForPublicReport('/home/alice/.local/bin/tmux'), '~/.../tmux');
+  assert.equal(redactPathForPublicReport('C:\\Users\\alice\\project\\tmux.exe'), 'C:\\...\\tmux.exe');
+});
+
+test('buildSupportBundleMarkdown defaults to safe redaction when requested', () => {
+  const markdown = buildSupportBundleMarkdown({
+    generatedAt: '2026-03-14T12:00:00.000Z',
+    extensionVersion: '1.0.5',
+    vscodeVersion: '1.100.0',
+    runtime: 'wsl',
+    platform: 'linux',
+    workspaceRoot: '/home/alice/project',
+    repoConfigPath: '/home/alice/project/.agent-grid.json',
+    repoConfigState: 'loaded',
+    environmentState: 'ready',
+    environmentDetail: 'tmux is available.',
+    terminalOpen: true,
+    detachedTmuxSession: false,
+    effectiveTmuxCommand: '/home/alice/.local/bin/tmux',
+    effectiveLayout: 'tiled',
+    effectivePanes: [{ name: 'Claude', cwd: '/home/alice/project', startupCommand: 'claude' }],
+    effectiveConfigSource: 'repo config + workspace overrides',
+    livePanes: [{ index: 0, active: true, title: 'Claude', currentCommand: 'claude', currentPath: '/home/alice/project' }],
+    usageMetrics: {
+      enabledInSettings: true,
+      vscodeTelemetryEnabled: true,
+      active: true,
+      storedEvents: 5
+    },
+    repoConfig: { layout: 'tiled' },
+    usageReport: {
+      generatedAt: '2026-03-14T12:00:00.000Z',
+      extensionVersion: '1.0.5',
+      settings: { enableUsageMetrics: true, vscodeTelemetryEnabled: true, active: true },
+      notes: [],
+      events: {}
+    },
+    safeForPublic: true
+  });
+
+  assert.match(markdown, /Mode: Safe for public issue/);
+  assert.match(markdown, /Workspace root: <workspace>/);
+  assert.match(markdown, /Repo config path: <workspace>\/\.agent-grid\.json/);
+  assert.match(markdown, /Effective tmux command: ~\/\.\.\.\/tmux/);
+  assert.doesNotMatch(markdown, /\/home\/alice\/project/);
 });

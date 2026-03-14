@@ -1,0 +1,53 @@
+{
+  "layout": "tiled",
+  "terminals": [
+    {
+      "name": "Frontend",
+      "startupCommand": "",
+      "cwd": "${workspaceFolder}/apps/frontend"
+    },
+    {
+      "name": "Backend",
+      "startupCommand": "",
+      "cwd": "${workspaceFolder}/apps/backend"
+    },
+    {
+      "name": "Tests",
+      "startupCommand": "npm run test:watch",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Ops",
+      "startupCommand": "",
+      "cwd": "${workspaceFolder}"
+    }
+  ],
+  "profiles": [
+    {
+      "name": "Review",
+      "layout": "tiled",
+      "terminals": [
+        {
+          "name": "Codex",
+          "startupCommand": "codex",
+          "cwd": "${workspaceFolder}"
+        },
+        {
+          "name": "Claude",
+          "startupCommand": "claude",
+          "cwd": "${workspaceFolder}"
+        },
+        {
+          "name": "Tests",
+          "startupCommand": "npm test",
+          "cwd": "${workspaceFolder}"
+        },
+        {
+          "name": "Shell",
+          "startupCommand": "",
+          "cwd": "${workspaceFolder}"
+        }
+      ]
+    }
+  ]
+}

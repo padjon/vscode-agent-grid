@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.6
+
+- fixed config precedence so repo-level `.agent-grid.json` sits between user defaults and workspace overrides
+- made support-bundle export safe-by-default with redacted absolute local paths for public issue filing
+- added live tmux pane visibility to the sidebar, diagnostics, and support bundle output
+- added testable core helpers for effective config resolution and support-bundle rendering
+- added onboarding docs and example repo configs for team sharing, WSL, and common workflows
+- added Marketplace and sponsor badges to the README header
+
 ## 1.0.5
 
 - added a native Agent Grid sidebar with workspace status, actions, presets, profiles, migration tools, and support actions

@@ -35,6 +35,85 @@ export interface RepoConfig {
   profiles?: WorkspaceProfile[];
 }
 
+export interface SettingsLayerConfig {
+  tmuxCommand?: string;
+  layout?: unknown;
+  terminals?: unknown[];
+  profiles?: unknown[];
+}
+
+export type ConfigLayerSource = 'workspace' | 'repo' | 'user' | 'default' | 'none';
+
+export interface EffectiveConfigLayers {
+  tmuxCommand: ConfigLayerSource;
+  layout: ConfigLayerSource;
+  terminals: ConfigLayerSource;
+  profiles: ConfigLayerSource;
+}
+
+export interface EffectiveWorkspaceConfig {
+  tmuxCommand: string;
+  layout: LayoutName;
+  terminals: TerminalDefinition[];
+  profiles: WorkspaceProfile[];
+  layers: EffectiveConfigLayers;
+}
+
+export interface UsageMetricsReport {
+  generatedAt: string;
+  extensionVersion: string;
+  settings: {
+    enableUsageMetrics: boolean;
+    vscodeTelemetryEnabled: boolean;
+    active: boolean;
+  };
+  notes: string[];
+  events: Record<string, unknown>;
+}
+
+export interface SupportBundlePane {
+  name: string;
+  cwd?: string;
+  startupCommand: string;
+}
+
+export interface SupportBundleLivePane {
+  index: number;
+  active: boolean;
+  title: string;
+  currentCommand: string;
+  currentPath?: string;
+}
+
+export interface SupportBundleInput {
+  generatedAt: string;
+  extensionVersion: string;
+  vscodeVersion: string;
+  runtime: string;
+  platform: string;
+  workspaceRoot?: string;
+  repoConfigPath?: string;
+  repoConfigState: string;
+  environmentState: string;
+  environmentDetail: string;
+  terminalOpen: boolean;
+  detachedTmuxSession: boolean;
+  effectiveTmuxCommand: string;
+  effectiveLayout: LayoutName;
+  effectivePanes: SupportBundlePane[];
+  effectiveConfigSource: string;
+  livePanes: SupportBundleLivePane[];
+  usageMetrics: {
+    enabledInSettings: boolean;
+    vscodeTelemetryEnabled: boolean;
+    active: boolean;
+    storedEvents: number;
+  };
+  repoConfig: RepoConfig;
+  usageReport: UsageMetricsReport;
+  safeForPublic: boolean;
+}
+
 export const DEFAULT_TERMINALS: TerminalDefinition[] = [
   { name: 'Agent 1', startupCommand: '', cwd: '${workspaceFolder}' },
   { name: 'Agent 2', startupCommand: '', cwd: '${workspaceFolder}' },
@@ -283,6 +362,73 @@ export function parseRepoConfig(raw: string): RepoConfig {
   };
 }
 
+export function resolveEffectiveWorkspaceConfig(layers: {
+  workspace: SettingsLayerConfig;
+  repo?: RepoConfig;
+  user: SettingsLayerConfig;
+}): EffectiveWorkspaceConfig {
+  const workspaceTmux = readTrimmedString(layers.workspace.tmuxCommand);
+  const repoTmux = layers.repo?.tmuxCommand;
+  const userTmux = readTrimmedString(layers.user.tmuxCommand);
+
+  const workspaceLayout = readLayoutName(layers.workspace.layout);
+  const repoLayout = layers.repo?.layout;
+  const userLayout = readLayoutName(layers.user.layout);
+
+  const workspaceTerminals = normalizeTerminalOverride(layers.workspace.terminals);
+  const repoTerminals = normalizeTerminalOverride(layers.repo?.terminals);
+  const userTerminals = normalizeTerminalOverride(layers.user.terminals);
+
+  const workspaceProfiles = normalizeProfileOverride(layers.workspace.profiles);
+  const repoProfiles = normalizeProfileOverride(layers.repo?.profiles);
+  const userProfiles = normalizeProfileOverride(layers.user.profiles);
+
+  const tmuxCommand = workspaceTmux ?? repoTmux ?? userTmux ?? 'tmux';
+  const layout = workspaceLayout ?? repoLayout ?? userLayout ?? 'tiled';
+  const terminals = workspaceTerminals ?? repoTerminals ?? userTerminals ?? DEFAULT_TERMINALS;
+  const profiles = mergeProfiles(mergeProfiles(userProfiles ?? [], repoProfiles ?? []), workspaceProfiles ?? []);
+
+  return {
+    tmuxCommand,
+    layout,
+    terminals,
+    profiles,
+    layers: {
+      tmuxCommand: workspaceTmux ? 'workspace' : repoTmux ? 'repo' : userTmux ? 'user' : 'default',
+      layout: workspaceLayout ? 'workspace' : repoLayout ? 'repo' : userLayout ? 'user' : 'default',
+      terminals: workspaceTerminals ? 'workspace' : repoTerminals ? 'repo' : userTerminals ? 'user' : 'default',
+      profiles: workspaceProfiles ? 'workspace' : repoProfiles ? 'repo' : userProfiles ? 'user' : 'none'
+    }
+  };
+}
+
+export function describeEffectiveConfigLayers(layers: EffectiveConfigLayers): string {
+  const activeSources = new Set<ConfigLayerSource>(
+    [layers.tmuxCommand, layers.layout, layers.terminals, layers.profiles].filter(
+      (source): source is ConfigLayerSource => source !== 'none' && source !== 'default'
+    )
+  );
+
+  if (activeSources.size === 0) {
+    return 'defaults';
+  }
+
+  const ordered = ['repo', 'workspace', 'user'].filter((source) => activeSources.has(source as ConfigLayerSource));
+  const labels = ordered.map((source) => {
+    if (source === 'workspace') {
+      return 'workspace overrides';
+    }
+
+    if (source === 'repo') {
+      return 'repo config';
+    }
+
+    return 'user settings';
+  });
+
+  return labels.join(' + ');
+}
+
 export function mergeProfiles(baseProfiles: WorkspaceProfile[], overrideProfiles: WorkspaceProfile[]): WorkspaceProfile[] {
   const merged = [...baseProfiles];
 
@@ -302,6 +448,119 @@ export function mergeProfiles(baseProfiles: WorkspaceProfile[], overrideProfiles
 export function sanitizeTmuxName(value: string): string {
   const sanitized = value.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
   return sanitized || 'agent-grid';
+}
+
+export function redactPathForPublicReport(value: string | undefined, workspaceRoot?: string): string | undefined {
+  if (!value) {
+    return value;
+  }
+
+  if (workspaceRoot && value === workspaceRoot) {
+    return '<workspace>';
+  }
+
+  if (workspaceRoot && value.startsWith(`${workspaceRoot}${pathSeparator(value)}`)) {
+    return `<workspace>${value.slice(workspaceRoot.length)}`;
+  }
+
+  if (value.startsWith('/')) {
+    return redactUnixPath(value);
+  }
+
+  if (/^[A-Za-z]:[\\/]/.test(value)) {
+    return redactWindowsPath(value);
+  }
+
+  return value;
+}
+
+export function buildSupportBundleMarkdown(input: SupportBundleInput): string {
+  const workspaceRoot = input.safeForPublic ? redactPathForPublicReport(input.workspaceRoot, input.workspaceRoot) : input.workspaceRoot;
+  const repoConfigPath = input.safeForPublic
+    ? redactPathForPublicReport(input.repoConfigPath, input.workspaceRoot)
+    : input.repoConfigPath;
+  const tmuxCommand = input.safeForPublic
+    ? redactPathForPublicReport(input.effectiveTmuxCommand, input.workspaceRoot)
+    : input.effectiveTmuxCommand;
+
+  return [
+    '# Agent Grid Support Bundle',
+    '',
+    `Generated: ${input.generatedAt}`,
+    `Mode: ${input.safeForPublic ? 'Safe for public issue' : 'Full detail'}`,
+    '',
+    '## Summary',
+    '',
+    '- Replace the placeholders below with the user-visible problem description and reproduction steps.',
+    '- This bundle contains environment and configuration state only.',
+    '',
+    'Problem:',
+    '',
+    'Reproduction:',
+    '',
+    'Expected behavior:',
+    '',
+    'Actual behavior:',
+    '',
+    '## Environment',
+    '',
+    `- Extension version: ${input.extensionVersion}`,
+    `- VS Code version: ${input.vscodeVersion}`,
+    `- Runtime: ${input.runtime}`,
+    `- Platform: ${input.platform}`,
+    `- Workspace root: ${workspaceRoot ?? '(none)'}`,
+    `- Repo config path: ${repoConfigPath ?? '(none)'}`,
+    `- Repo config state: ${input.repoConfigState}`,
+    '',
+    '## Agent Grid State',
+    '',
+    `- Environment state: ${input.environmentState}`,
+    `- Environment detail: ${input.environmentDetail}`,
+    `- Terminal open: ${input.terminalOpen ? 'yes' : 'no'}`,
+    `- Detached tmux session: ${input.detachedTmuxSession ? 'yes' : 'no'}`,
+    `- Effective config source: ${input.effectiveConfigSource}`,
+    `- Effective tmux command: ${tmuxCommand}`,
+    `- Effective layout: ${input.effectiveLayout}`,
+    `- Effective panes: ${input.effectivePanes.length}`,
+    '',
+    '## Effective Panes',
+    '',
+    ...input.effectivePanes.map((pane, index) => {
+      const cwd = input.safeForPublic ? redactPathForPublicReport(pane.cwd, input.workspaceRoot) : pane.cwd;
+      const startup = pane.startupCommand.trim() || '(none)';
+      return `- Pane ${index + 1}: name="${pane.name}" cwd="${cwd ?? '(default)'}" startup="${startup}"`;
+    }),
+    '',
+    '## Live Panes',
+    '',
+    ...(input.livePanes.length > 0
+      ? input.livePanes.map((pane) => {
+          const currentPath = input.safeForPublic
+            ? redactPathForPublicReport(pane.currentPath, input.workspaceRoot)
+            : pane.currentPath;
+          return `- Pane ${pane.index + 1}: active=${pane.active ? 'yes' : 'no'} title="${pane.title}" command="${pane.currentCommand}" cwd="${currentPath ?? '(unknown)'}"`;
+        })
+      : ['- No live pane state available']),
+    '',
+    '## Usage Metrics State',
+    '',
+    `- Metrics enabled in settings: ${input.usageMetrics.enabledInSettings ? 'yes' : 'no'}`,
+    `- VS Code telemetry enabled: ${input.usageMetrics.vscodeTelemetryEnabled ? 'yes' : 'no'}`,
+    `- Metrics active: ${input.usageMetrics.active ? 'yes' : 'no'}`,
+    `- Stored events: ${input.usageMetrics.storedEvents}`,
+    '',
+    '## Repo Config JSON',
+    '',
+    '```json',
+    JSON.stringify(input.repoConfig ?? {}, null, 2),
+    '```',
+    '',
+    '## Effective Usage Report',
+    '',
+    '```json',
+    JSON.stringify(input.usageReport, null, 2),
+    '```'
+  ].join('\n');
 }
 
 function shellQuote(value: string): string {
@@ -327,4 +586,46 @@ function readTrimmedString(value: unknown): string | undefined {
 
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function normalizeTerminalOverride(values: unknown[] | TerminalDefinition[] | undefined): TerminalDefinition[] | undefined {
+  if (!Array.isArray(values) || values.length === 0) {
+    return undefined;
+  }
+
+  return normalizeTerminalDefinitions(values);
+}
+
+function normalizeProfileOverride(values: unknown[] | WorkspaceProfile[] | undefined): WorkspaceProfile[] | undefined {
+  if (!Array.isArray(values)) {
+    return undefined;
+  }
+
+  return normalizeProfiles(values);
+}
+
+function redactUnixPath(value: string): string {
+  const segments = value.split('/').filter(Boolean);
+  if (segments.length === 0) {
+    return value;
+  }
+
+  if (segments[0] === 'home' && segments.length >= 2) {
+    return `~/.../${segments.at(-1)}`;
+  }
+
+  return `/.../${segments.at(-1)}`;
+}
+
+function redactWindowsPath(value: string): string {
+  const parts = value.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) {
+    return value;
+  }
+
+  return `${parts[0]}\\...\\${parts.at(-1)}`;
+}
+
+function pathSeparator(value: string): string {
+  return value.includes('\\') ? '\\' : '/';
 }

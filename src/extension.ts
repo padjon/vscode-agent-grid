@@ -5,17 +5,27 @@ import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 import {
   BUILTIN_PRESETS,
+  buildSupportBundleMarkdown,
   buildTmuxBootstrapScript,
+  describeEffectiveConfigLayers,
   mergeProfiles,
   normalizeProfiles,
   normalizeTerminalDefinitions,
   parseRepoConfig,
+  redactPathForPublicReport,
   readLayoutName,
+  resolveEffectiveWorkspaceConfig,
   sanitizeTmuxName
 } from './core';
 import type {
+  ConfigLayerSource,
+  EffectiveConfigLayers,
   LayoutName,
   RepoConfig,
+  SettingsLayerConfig,
+  SupportBundleLivePane,
+  SupportBundlePane,
+  UsageMetricsReport,
   TerminalDefinition,
   WorkspacePreset,
   WorkspaceProfile,
@@ -67,6 +77,8 @@ interface PaneInfo {
   active: boolean;
 }
 
+interface LivePaneInfo extends SupportBundleLivePane {}
+
 interface RepoConfigState {
   path?: string;
   exists: boolean;
@@ -112,10 +124,13 @@ interface AgentGridSidebarSnapshot {
   terminalOpen: boolean;
   detached: boolean;
   session: WorkspaceSession;
+  effectiveConfigLayers: EffectiveConfigLayers;
+  configSourceLabel: string;
   profiles: WorkspaceProfile[];
   presets: WorkspacePreset[];
   repoConfig: RepoConfigState;
   usageMetrics: UsageMetricsSnapshot;
+  livePanes: LivePaneInfo[];
 }
 
 interface AgentGridSidebarNode {
@@ -335,12 +350,14 @@ class AgentGridController implements vscode.Disposable {
 
   async getSidebarSnapshot(existingEnvironment?: EnvironmentInfo): Promise<AgentGridSidebarSnapshot> {
     const repoConfig = this.getRepoConfigState();
-    const session = this.getSessionFromSettings();
+    const effectiveConfig = this.getEffectiveWorkspaceConfig(repoConfig.config);
+    const session = this.toWorkspaceSession(effectiveConfig);
     const environment = existingEnvironment ?? (await this.inspectEnvironment(session));
-    const profiles = this.getProfilesFromSettings();
+    const profiles = effectiveConfig.profiles;
     const terminalOpen = Boolean(this.findExistingTerminal());
     const detached = environment.state === 'ready' ? await this.hasDetachedTmuxSession(session) : false;
     const hasWorkspaceFolder = Boolean(vscode.workspace.workspaceFolders?.length);
+    const livePanes = environment.state === 'ready' && (terminalOpen || detached) ? await this.listLivePanes(session) : [];
     const hasConfiguredWorkspace = this.hasConfiguredWorkspaceSettings() || this.hasRepoConfiguration(repoConfig) || profiles.length > 0;
     const shouldShowWelcome = !hasWorkspaceFolder || (!hasConfiguredWorkspace && !terminalOpen && !detached);
 
@@ -352,10 +369,13 @@ class AgentGridController implements vscode.Disposable {
       terminalOpen,
       detached,
       session,
+      effectiveConfigLayers: effectiveConfig.layers,
+      configSourceLabel: describeEffectiveConfigLayers(effectiveConfig.layers),
       profiles,
       presets: BUILTIN_PRESETS,
       repoConfig,
-      usageMetrics: this.usageMetrics.getSnapshot()
+      usageMetrics: this.usageMetrics.getSnapshot(),
+      livePanes
     };
   }
 
@@ -372,25 +392,12 @@ class AgentGridController implements vscode.Disposable {
   }
 
   private hasConfiguredWorkspaceSettings(): boolean {
-    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
-    const tmuxInspection = config.inspect<string>('tmuxCommand');
-    const layoutInspection = config.inspect<string>('layout');
-    const terminalsInspection = config.inspect<unknown[]>('terminals');
-    const profilesInspection = config.inspect<unknown[]>('profiles');
-
+    const workspaceLayer = this.getWorkspaceSettingsLayer();
     return Boolean(
-      tmuxInspection?.workspaceValue ||
-        tmuxInspection?.workspaceFolderValue ||
-        tmuxInspection?.globalValue ||
-        layoutInspection?.workspaceValue ||
-        layoutInspection?.workspaceFolderValue ||
-        layoutInspection?.globalValue ||
-      terminalsInspection?.workspaceValue ||
-        terminalsInspection?.workspaceFolderValue ||
-        terminalsInspection?.globalValue ||
-        profilesInspection?.workspaceValue ||
-        profilesInspection?.workspaceFolderValue ||
-        profilesInspection?.globalValue
+      workspaceLayer.tmuxCommand !== undefined ||
+        workspaceLayer.layout !== undefined ||
+        workspaceLayer.terminals !== undefined ||
+        workspaceLayer.profiles !== undefined
     );
   }
 
@@ -651,17 +658,34 @@ class AgentGridController implements vscode.Disposable {
       return;
     }
 
-    const settingsProfiles = this.getConfiguredProfilesFromSettings();
-    const currentSession = this.getSessionFromSettings();
+    const workspaceLayer = this.getWorkspaceSettingsLayer();
+    const hasWorkspaceOverrides =
+      workspaceLayer.tmuxCommand !== undefined ||
+      workspaceLayer.layout !== undefined ||
+      workspaceLayer.terminals !== undefined ||
+      workspaceLayer.profiles !== undefined;
+
+    if (!hasWorkspaceOverrides) {
+      await vscode.window.showInformationMessage(
+        'No Agent Grid workspace overrides are configured. Use Save Workspace To Repo Config if you want to commit the current effective setup.'
+      );
+      return;
+    }
+
+    const workspaceConfig = resolveEffectiveWorkspaceConfig({
+      workspace: workspaceLayer,
+      repo: undefined,
+      user: {}
+    });
     const nextConfig: RepoConfig = {
       ...writable.config,
-      layout: currentSession.layout,
-      terminals: currentSession.terminals,
-      profiles: mergeProfiles(writable.config.profiles ?? [], settingsProfiles)
+      layout: workspaceConfig.layout,
+      terminals: workspaceConfig.terminals,
+      profiles: mergeProfiles(writable.config.profiles ?? [], workspaceConfig.profiles)
     };
 
-    if (currentSession.tmuxCommand !== 'tmux') {
-      nextConfig.tmuxCommand = currentSession.tmuxCommand;
+    if (workspaceConfig.tmuxCommand !== 'tmux') {
+      nextConfig.tmuxCommand = workspaceConfig.tmuxCommand;
     } else {
       delete nextConfig.tmuxCommand;
     }
@@ -685,7 +709,29 @@ class AgentGridController implements vscode.Disposable {
   }
 
   private async exportSupportBundle(): Promise<void> {
-    const bundle = await this.buildSupportBundle();
+    const mode = await vscode.window.showQuickPick(
+      [
+        {
+          label: 'Safe for Public Issue',
+          description: 'Recommended: redact absolute local paths from the exported bundle',
+          safeForPublic: true
+        },
+        {
+          label: 'Full Detail',
+          description: 'Include absolute local paths for private debugging only',
+          safeForPublic: false
+        }
+      ],
+      {
+        placeHolder: 'Choose the level of detail for the support bundle'
+      }
+    );
+
+    if (!mode) {
+      return;
+    }
+
+    const bundle = await this.buildSupportBundle(mode.safeForPublic);
     const document = await vscode.workspace.openTextDocument({
       language: 'markdown',
       content: `${bundle}\n`
@@ -1066,10 +1112,12 @@ class AgentGridController implements vscode.Disposable {
   private async runDiagnostics(): Promise<void> {
     const session = this.getSessionFromSettings();
     const repoConfig = this.getRepoConfigState();
+    const effectiveConfig = this.getEffectiveWorkspaceConfig(repoConfig.config);
     const usageMetrics = this.usageMetrics.getSnapshot();
     const environment = await this.inspectEnvironment(session);
     const detached = environment.state === 'ready' ? await this.hasDetachedTmuxSession(session) : false;
     const terminalOpen = Boolean(this.findExistingTerminal());
+    const livePanes = environment.state === 'ready' && (terminalOpen || detached) ? await this.listLivePanes(session) : [];
     const tmuxCommand = expandHomeDirectory(this.expandVariables(session.tmuxCommand).trim());
     let tmuxVersion = 'unavailable';
 
@@ -1086,6 +1134,7 @@ class AgentGridController implements vscode.Disposable {
       `Workspace root: ${this.getWorkspaceRoot() ?? '(none)'}`,
       `Repo config path: ${repoConfig.path ?? '(none)'}`,
       `Repo config state: ${repoConfig.error ? `error: ${repoConfig.error}` : repoConfig.exists ? 'loaded' : 'missing'}`,
+      `Effective config source: ${describeEffectiveConfigLayers(effectiveConfig.layers)}`,
       `Usage metrics setting: ${usageMetrics.enabledInSettings ? 'enabled' : 'disabled'}`,
       `VS Code telemetry enabled: ${usageMetrics.vscodeTelemetryEnabled ? 'yes' : 'no'}`,
       `Usage metrics active: ${usageMetrics.active ? 'yes' : 'no'}`,
@@ -1099,7 +1148,8 @@ class AgentGridController implements vscode.Disposable {
       `Configured layout: ${session.layout}`,
       `Configured panes: ${session.terminals.length}`,
       `Terminal open: ${terminalOpen ? 'yes' : 'no'}`,
-      `Detached tmux session: ${detached ? 'yes' : 'no'}`
+      `Detached tmux session: ${detached ? 'yes' : 'no'}`,
+      `Live pane states available: ${livePanes.length}`
     ];
 
     this.outputChannel.clear();
@@ -1119,6 +1169,14 @@ class AgentGridController implements vscode.Disposable {
     } else if (!terminalOpen && !detached) {
       this.outputChannel.appendLine('');
       this.outputChannel.appendLine('Recommended next step: run Agent Grid: Create or Recreate Workspace.');
+    } else if (livePanes.length > 0) {
+      this.outputChannel.appendLine('');
+      this.outputChannel.appendLine('Live panes:');
+      for (const pane of livePanes) {
+        this.outputChannel.appendLine(
+          `- [${pane.active ? 'active' : 'idle'}] ${pane.title || `Pane ${pane.index + 1}`} :: ${pane.currentCommand} :: ${pane.currentPath ?? '(unknown cwd)'}`
+        );
+      }
     }
 
     this.outputChannel.show(true);
@@ -1127,79 +1185,49 @@ class AgentGridController implements vscode.Disposable {
     await vscode.window.showInformationMessage('Agent Grid environment check written to the "Agent Grid" output channel.');
   }
 
-  private async buildSupportBundle(): Promise<string> {
+  private async buildSupportBundle(safeForPublic: boolean): Promise<string> {
     const session = this.getSessionFromSettings();
     const repoConfig = this.getRepoConfigState();
+    const effectiveConfig = this.getEffectiveWorkspaceConfig(repoConfig.config);
     const usageMetrics = this.usageMetrics.getSnapshot();
     const environment = await this.inspectEnvironment(session);
     const detached = environment.state === 'ready' ? await this.hasDetachedTmuxSession(session) : false;
     const terminalOpen = Boolean(this.findExistingTerminal());
+    const livePanes = environment.state === 'ready' && (terminalOpen || detached) ? await this.listLivePanes(session) : [];
+    const panes: SupportBundlePane[] = session.terminals.map((terminal) => ({
+      name: terminal.name,
+      cwd: terminal.cwd?.trim() || '${workspaceFolder}',
+      startupCommand: terminal.startupCommand
+    }));
 
-    return [
-      '# Agent Grid Support Bundle',
-      '',
-      `Generated: ${new Date().toISOString()}`,
-      '',
-      '## Summary',
-      '',
-      '- Replace the placeholders below with the user-visible problem description and reproduction steps.',
-      '- This bundle contains environment and configuration state only.',
-      '',
-      'Problem:',
-      '',
-      'Reproduction:',
-      '',
-      'Expected behavior:',
-      '',
-      'Actual behavior:',
-      '',
-      '## Environment',
-      '',
-      `- Extension version: ${this.context.extension.packageJSON.version ?? 'unknown'}`,
-      `- VS Code version: ${vscode.version}`,
-      `- Runtime: ${vscode.env.remoteName ?? process.platform}`,
-      `- Platform: ${process.platform}`,
-      `- Workspace root: ${this.getWorkspaceRoot() ?? '(none)'}`,
-      `- Repo config path: ${repoConfig.path ?? '(none)'}`,
-      `- Repo config state: ${repoConfig.error ? `error: ${repoConfig.error}` : repoConfig.exists ? 'loaded' : 'missing'}`,
-      '',
-      '## Agent Grid State',
-      '',
-      `- Environment state: ${environment.state}`,
-      `- Environment detail: ${environment.detail}`,
-      `- Terminal open: ${terminalOpen ? 'yes' : 'no'}`,
-      `- Detached tmux session: ${detached ? 'yes' : 'no'}`,
-      `- Effective tmux command: ${session.tmuxCommand}`,
-      `- Effective layout: ${session.layout}`,
-      `- Effective panes: ${session.terminals.length}`,
-      '',
-      '## Effective Panes',
-      '',
-      ...session.terminals.map((terminal, index) => {
-        const cwd = terminal.cwd?.trim() || '${workspaceFolder}';
-        const startup = terminal.startupCommand.trim() || '(none)';
-        return `- Pane ${index + 1}: name="${terminal.name}" cwd="${cwd}" startup="${startup}"`;
-      }),
-      '',
-      '## Usage Metrics State',
-      '',
-      `- Metrics enabled in settings: ${usageMetrics.enabledInSettings ? 'yes' : 'no'}`,
-      `- VS Code telemetry enabled: ${usageMetrics.vscodeTelemetryEnabled ? 'yes' : 'no'}`,
-      `- Metrics active: ${usageMetrics.active ? 'yes' : 'no'}`,
-      `- Stored events: ${usageMetrics.totalEvents}`,
-      '',
-      '## Repo Config JSON',
-      '',
-      '```json',
-      JSON.stringify(repoConfig.config ?? {}, null, 2),
-      '```',
-      '',
-      '## Effective Usage Report',
-      '',
-      '```json',
-      JSON.stringify(this.usageMetrics.buildExportData(), null, 2),
-      '```'
-    ].join('\n');
+    return buildSupportBundleMarkdown({
+      generatedAt: new Date().toISOString(),
+      extensionVersion: String(this.context.extension.packageJSON.version ?? 'unknown'),
+      vscodeVersion: vscode.version,
+      runtime: vscode.env.remoteName ?? process.platform,
+      platform: process.platform,
+      workspaceRoot: this.getWorkspaceRoot(),
+      repoConfigPath: repoConfig.path,
+      repoConfigState: repoConfig.error ? `error: ${repoConfig.error}` : repoConfig.exists ? 'loaded' : 'missing',
+      environmentState: environment.state,
+      environmentDetail: environment.detail,
+      terminalOpen,
+      detachedTmuxSession: detached,
+      effectiveTmuxCommand: session.tmuxCommand,
+      effectiveLayout: session.layout,
+      effectivePanes: panes,
+      effectiveConfigSource: describeEffectiveConfigLayers(effectiveConfig.layers),
+      livePanes,
+      usageMetrics: {
+        enabledInSettings: usageMetrics.enabledInSettings,
+        vscodeTelemetryEnabled: usageMetrics.vscodeTelemetryEnabled,
+        active: usageMetrics.active,
+        storedEvents: usageMetrics.totalEvents
+      },
+      repoConfig: repoConfig.config ?? {},
+      usageReport: this.usageMetrics.buildExportData() as UsageMetricsReport,
+      safeForPublic
+    });
   }
 
   private async saveCurrentWorkspaceAsProfile(): Promise<void> {
@@ -1646,6 +1674,36 @@ class AgentGridController implements vscode.Disposable {
       .filter((pane) => Number.isInteger(pane.index));
   }
 
+  private async listLivePanes(session: WorkspaceSession): Promise<LivePaneInfo[]> {
+    try {
+      const output = await this.execTmux(session, [
+        'list-panes',
+        '-t',
+        `${session.sessionName}:${session.windowName}`,
+        '-F',
+        '#{pane_index}\t#{pane_active}\t#{pane_title}\t#{pane_current_command}\t#{pane_current_path}'
+      ]);
+
+      return output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [indexText = '', activeText = '0', title = '', currentCommand = '', currentPath = ''] = line.split('\t');
+          return {
+            index: Number(indexText),
+            active: activeText === '1',
+            title,
+            currentCommand,
+            currentPath
+          };
+        })
+        .filter((pane) => Number.isInteger(pane.index));
+    } catch {
+      return [];
+    }
+  }
+
   private buildTmuxInstallHint(): string {
     if (vscode.env.remoteName === 'wsl') {
       return 'tmux was not found in this WSL environment. Install it there, for example with `sudo apt install tmux`, then recreate the workspace.';
@@ -1869,39 +1927,67 @@ class AgentGridController implements vscode.Disposable {
     this.statusBarItem.tooltip = 'Run Agent Grid: Create or Recreate Workspace to start the tmux-backed workspace.';
   }
 
-  private getSessionFromSettings(): WorkspaceSession {
-    const repoConfig = this.getRepoConfigState().config;
-    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
-    const configuredTerminals = this.readConfiguredSetting<unknown[]>(config.inspect<unknown[]>('terminals'));
-    const configuredTmuxCommand = this.readConfiguredSetting<string>(config.inspect<string>('tmuxCommand'));
-    const configuredLayout = this.readConfiguredSetting<string>(config.inspect<string>('layout'));
-    const terminals = normalizeTerminalDefinitions(configuredTerminals ?? repoConfig?.terminals);
+  private getEffectiveWorkspaceConfig(repoConfig: RepoConfig | undefined = this.getRepoConfigState().config) {
+    return resolveEffectiveWorkspaceConfig({
+      workspace: this.getWorkspaceSettingsLayer(),
+      repo: repoConfig,
+      user: this.getUserSettingsLayer()
+    });
+  }
 
+  private getSessionFromSettings(): WorkspaceSession {
+    return this.toWorkspaceSession(this.getEffectiveWorkspaceConfig());
+  }
+
+  private toWorkspaceSession(config: ReturnType<AgentGridController['getEffectiveWorkspaceConfig']>): WorkspaceSession {
     return {
-      tmuxCommand: readTrimmedString(configuredTmuxCommand) ?? repoConfig?.tmuxCommand ?? 'tmux',
+      tmuxCommand: config.tmuxCommand,
       sessionName: this.buildSessionName(),
       windowName: DEFAULT_WINDOW_NAME,
-      layout: readLayoutName(configuredLayout) ?? repoConfig?.layout ?? 'tiled',
-      terminals
+      layout: config.layout,
+      terminals: config.terminals
+    };
+  }
+
+  private getWorkspaceSettingsLayer(): SettingsLayerConfig {
+    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
+    return {
+      tmuxCommand: this.readWorkspaceOverride<string>(config.inspect<string>('tmuxCommand')),
+      layout: this.readWorkspaceOverride<string>(config.inspect<string>('layout')),
+      terminals: this.readWorkspaceOverride<unknown[]>(config.inspect<unknown[]>('terminals')),
+      profiles: this.readWorkspaceOverride<unknown[]>(config.inspect<unknown[]>('profiles'))
+    };
+  }
+
+  private getUserSettingsLayer(): SettingsLayerConfig {
+    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
+    return {
+      tmuxCommand: this.readUserSetting<string>(config.inspect<string>('tmuxCommand')),
+      layout: this.readUserSetting<string>(config.inspect<string>('layout')),
+      terminals: this.readUserSetting<unknown[]>(config.inspect<unknown[]>('terminals')),
+      profiles: this.readUserSetting<unknown[]>(config.inspect<unknown[]>('profiles'))
     };
   }
 
   private getProfilesFromSettings(): WorkspaceProfile[] {
-    const repoProfiles = this.getRepoConfigState().config?.profiles ?? [];
-    const settingsProfiles = this.getConfiguredProfilesFromSettings();
-    return mergeProfiles(repoProfiles, settingsProfiles);
+    return this.getEffectiveWorkspaceConfig().profiles;
   }
 
   private getConfiguredProfilesFromSettings(): WorkspaceProfile[] {
-    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
-    const configuredProfiles = this.readConfiguredSetting<unknown[]>(config.inspect<unknown[]>('profiles'));
+    const configuredProfiles = this.getWorkspaceSettingsLayer().profiles;
     return normalizeProfiles(configuredProfiles ?? []);
   }
 
-  private readConfiguredSetting<T>(
+  private readWorkspaceOverride<T>(
     inspection: { workspaceFolderValue?: T; workspaceValue?: T; globalValue?: T } | undefined
   ): T | undefined {
-    return inspection?.workspaceFolderValue ?? inspection?.workspaceValue ?? inspection?.globalValue;
+    return inspection?.workspaceFolderValue ?? inspection?.workspaceValue;
+  }
+
+  private readUserSetting<T>(
+    inspection: { globalValue?: T } | undefined
+  ): T | undefined {
+    return inspection?.globalValue;
   }
 
   private buildSessionName(): string {
@@ -2088,7 +2174,7 @@ class UsageMetricsService implements vscode.Disposable {
     return this.isEnabledInSettings() && vscode.env.isTelemetryEnabled;
   }
 
-  buildExportData(): Record<string, unknown> {
+  buildExportData(): UsageMetricsReport {
     return {
       generatedAt: new Date().toISOString(),
       extensionVersion: this.extensionVersion,
@@ -2118,6 +2204,7 @@ class UsageMetricsService implements vscode.Disposable {
 function buildSidebarNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
   const status = buildStatusNode(snapshot);
   const workspaceActions = buildWorkspaceActionNodes();
+  const sessionNodes = buildSessionNodes(snapshot);
   const migrationNodes = buildMigrationNodes();
   const supportNodes = buildSupportNodes();
   const usageMetricNodes = buildUsageMetricNodes(snapshot);
@@ -2125,10 +2212,18 @@ function buildSidebarNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebar
   const presetNodes = buildPresetNodes(snapshot);
   const paneActionNodes = buildPaneActionNodes(snapshot);
   const configuredPaneNodes = buildConfiguredPaneNodes(snapshot.session);
+  const livePaneNodes = buildLivePaneNodes(snapshot);
 
   return [
     status,
     buildSectionNode('workspace', 'Workspace', 'Core actions and setup', new vscode.ThemeIcon('terminal'), workspaceActions),
+    buildSectionNode(
+      'session',
+      'Session',
+      `${snapshot.session.sessionName} • ${snapshot.configSourceLabel}`,
+      new vscode.ThemeIcon('layers'),
+      sessionNodes
+    ),
     buildSectionNode(
       'repo-config',
       'Repo Config',
@@ -2181,11 +2276,37 @@ function buildSidebarNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebar
       paneActionNodes
     ),
     buildSectionNode(
+      'live-panes',
+      'Live Panes',
+      snapshot.livePanes.length > 0 ? `${snapshot.livePanes.length} panes reported by tmux` : 'Create the workspace to inspect tmux pane state',
+      new vscode.ThemeIcon('pulse'),
+      livePaneNodes
+    ),
+    buildSectionNode(
       'configured-panes',
       'Configured Panes',
       `${snapshot.session.terminals.length} panes in ${snapshot.session.layout}`,
       new vscode.ThemeIcon('list-unordered'),
       configuredPaneNodes
+    )
+  ];
+}
+
+function buildSessionNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
+  return [
+    buildLeafNode(
+      'session-name',
+      'Session Name',
+      snapshot.session.sessionName,
+      'tmux session name used by Agent Grid.',
+      new vscode.ThemeIcon('symbol-string')
+    ),
+    buildLeafNode(
+      'session-source',
+      'Config Source',
+      snapshot.configSourceLabel,
+      `tmuxCommand=${snapshot.effectiveConfigLayers.tmuxCommand}, layout=${snapshot.effectiveConfigLayers.layout}, terminals=${snapshot.effectiveConfigLayers.terminals}, profiles=${snapshot.effectiveConfigLayers.profiles}`,
+      new vscode.ThemeIcon('layers')
     )
   ];
 }
@@ -2307,6 +2428,30 @@ function buildSupportNodes(): AgentGridSidebarNode[] {
       DIAGNOSE_COMMAND
     )
   ];
+}
+
+function buildLivePaneNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
+  if (snapshot.livePanes.length === 0) {
+    return [
+      buildLeafNode(
+        'live-panes-empty',
+        'No Live Pane State',
+        'Start or reattach the workspace to inspect pane command and cwd state',
+        'Agent Grid queries tmux for active pane command and path details.',
+        new vscode.ThemeIcon('info')
+      )
+    ];
+  }
+
+  return snapshot.livePanes.map((pane) =>
+    buildLeafNode(
+      `live-pane-${pane.index}`,
+      `${pane.active ? '● ' : ''}${pane.title || `Pane ${pane.index + 1}`}`,
+      `${pane.currentCommand || '(unknown command)'} • ${redactPathForPublicReport(pane.currentPath) ?? '(unknown cwd)'}`,
+      `Pane ${pane.index + 1} is ${pane.active ? 'active' : 'inactive'} and currently running ${pane.currentCommand || '(unknown command)'}.`,
+      new vscode.ThemeIcon(pane.active ? 'circle-filled' : 'circle-outline')
+    )
+  );
 }
 
 function buildStatusNode(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode {

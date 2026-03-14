@@ -1,0 +1,20 @@
+{
+  "layout": "main-horizontal",
+  "terminals": [
+    {
+      "name": "Claude",
+      "startupCommand": "claude",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Tests",
+      "startupCommand": "npm run test:watch",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Shell",
+      "startupCommand": "",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

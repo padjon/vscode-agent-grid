@@ -1,5 +1,8 @@
 # Agent Grid
 
+[![Install on Marketplace](https://img.shields.io/badge/Marketplace-Agent%20Grid-0078D4?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=padjon.vscode-agent-grid)
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/padjon)
+
 Run terminal-first AI workflows inside one persistent VS Code workspace.
 
 Agent Grid turns one native terminal tab into a tmux-backed workspace for Claude Code, Codex, Gemini CLI, Aider, Goose, test runners, and project commands. It keeps each workflow in a fixed lane, restores the workspace when VS Code comes back, and stays inside the editor instead of pushing you into separate apps or scattered terminal tabs.
@@ -36,6 +39,7 @@ Agent Grid is built for developers who already like terminal-first tools:
 - Optional `.agent-grid.json` repo config for shared defaults across the team
 - Setup wizard and presets that adapt to detected scripts and common frontend/backend repo paths
 - Optional local usage metrics with manual JSON export for funnel analysis
+- Example repo configs and workflow docs for team onboarding, WSL, and common agent layouts
 
 ## Real Workspace
 
@@ -146,10 +150,19 @@ Documented event names and buckets are listed in [USAGE_METRICS.md](./USAGE_METR
 Agent Grid now has a built-in support loop for post-release issues:
 
 - `Agent Grid: Run Environment Check` refreshes the output-channel diagnostics
-- `Agent Grid: Export Support Bundle` opens a markdown bundle with environment state, effective config, repo-config status, and usage-metrics state
+- `Agent Grid: Export Support Bundle` opens a markdown bundle with environment state, effective config, repo-config status, live pane state, and usage-metrics state
 - `Agent Grid: Open Issue Tracker` opens the GitHub issue templates
 
-That gives users and maintainers one consistent artifact for setup, WSL, tmux, restore, and migration bugs.
+Use the `Safe for Public Issue` export mode for GitHub issues. It redacts absolute local paths by default.
+
+That gives users and maintainers one consistent artifact for setup, WSL, tmux, restore, live pane state, and migration bugs.
+
+## Guides And Examples
+
+- Team onboarding: [docs/team-onboarding.md](./docs/team-onboarding.md)
+- WSL setup: [docs/wsl.md](./docs/wsl.md)
+- Workflow recipes: [docs/workflows.md](./docs/workflows.md)
+- Example repo configs: [examples/](./examples)
 
 ## Example Configuration
 
@@ -231,6 +244,7 @@ If you already have a workspace configuration you like, run `Agent Grid: Save Cu
 The native `Agent Grid` sidebar gives you the main workflow without quick-pick hopping:
 
 - current workspace state: running, detached, idle, or setup issue
+- session name, config-source layer, and live tmux pane command/cwd visibility
 - one-click workspace actions and diagnostics
 - repo config status, creation, and parse-error visibility
 - migration actions between repo config and workspace overrides
