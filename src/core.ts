@@ -28,6 +28,13 @@ export interface WorkspaceProfile {
   terminals: TerminalDefinition[];
 }
 
+export interface RepoConfig {
+  tmuxCommand?: string;
+  layout?: LayoutName;
+  terminals?: TerminalDefinition[];
+  profiles?: WorkspaceProfile[];
+}
+
 export const DEFAULT_TERMINALS: TerminalDefinition[] = [
   { name: 'Agent 1', startupCommand: '', cwd: '${workspaceFolder}' },
   { name: 'Agent 2', startupCommand: '', cwd: '${workspaceFolder}' },
@@ -206,6 +213,92 @@ export function readLayoutName(value: unknown): LayoutName | undefined {
   return undefined;
 }
 
+export function normalizeTerminalDefinitions(values: unknown[] | undefined): TerminalDefinition[] {
+  const rawTerminals = Array.isArray(values) && values.length > 0 ? values.slice(0, 8) : DEFAULT_TERMINALS;
+  const terminals = rawTerminals
+    .map((value, index) => {
+      const defaults = DEFAULT_TERMINALS[index] ?? buildDefaultTerminal(index + 1);
+      const terminal = isRecord(value) ? value : {};
+
+      return {
+        name: readTrimmedString(terminal.name) ?? defaults.name,
+        startupCommand: readString(terminal.startupCommand) ?? defaults.startupCommand,
+        cwd: readTrimmedString(terminal.cwd) ?? defaults.cwd
+      };
+    })
+    .filter((terminal) => terminal.name || terminal.startupCommand || terminal.cwd);
+
+  return terminals.length > 0 ? terminals : DEFAULT_TERMINALS;
+}
+
+export function normalizeProfiles(values: unknown[] | undefined): WorkspaceProfile[] {
+  const configuredProfiles = Array.isArray(values) ? values : [];
+  const profiles: WorkspaceProfile[] = [];
+
+  for (const value of configuredProfiles) {
+    if (!isRecord(value)) {
+      continue;
+    }
+
+    const name = readTrimmedString(value.name);
+    const layout = readLayoutName(value.layout) ?? 'tiled';
+    const rawTerminals = Array.isArray(value.terminals) ? value.terminals : undefined;
+
+    if (!name || !rawTerminals || rawTerminals.length === 0) {
+      continue;
+    }
+
+    const terminals = normalizeTerminalDefinitions(rawTerminals);
+
+    if (terminals.length === 0) {
+      continue;
+    }
+
+    profiles.push({
+      name,
+      layout,
+      terminals
+    });
+  }
+
+  return profiles;
+}
+
+export function parseRepoConfig(raw: string): RepoConfig {
+  const parsed = JSON.parse(raw) as unknown;
+  if (!isRecord(parsed)) {
+    return {};
+  }
+
+  const tmuxCommand = readTrimmedString(parsed.tmuxCommand);
+  const layout = readLayoutName(parsed.layout);
+  const terminals = Array.isArray(parsed.terminals) ? normalizeTerminalDefinitions(parsed.terminals) : undefined;
+  const profiles = Array.isArray(parsed.profiles) ? normalizeProfiles(parsed.profiles) : undefined;
+
+  return {
+    tmuxCommand,
+    layout,
+    terminals,
+    profiles
+  };
+}
+
+export function mergeProfiles(baseProfiles: WorkspaceProfile[], overrideProfiles: WorkspaceProfile[]): WorkspaceProfile[] {
+  const merged = [...baseProfiles];
+
+  for (const profile of overrideProfiles) {
+    const existingIndex = merged.findIndex((candidate) => candidate.name === profile.name);
+
+    if (existingIndex >= 0) {
+      merged[existingIndex] = profile;
+    } else {
+      merged.push(profile);
+    }
+  }
+
+  return merged;
+}
+
 export function sanitizeTmuxName(value: string): string {
   const sanitized = value.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
   return sanitized || 'agent-grid';
@@ -217,4 +310,21 @@ function shellQuote(value: string): string {
 
 function escapeForSingleQuotes(value: string): string {
   return value.replace(/'/g, `'"'"'`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function readTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
 }

@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing, run `Agent Grid: Run Environment Check` and include the output if the issue is related to setup, tmux detection, WSL, attach, or restore behavior.
+        Before filing, run `Agent Grid: Run Environment Check` and `Agent Grid: Export Support Bundle`. Include the relevant output if the issue is related to setup, tmux detection, WSL, attach, restore, or repo-config migration behavior.
   - type: input
     id: vscode
     attributes:
@@ -42,5 +42,5 @@ body:
   - type: textarea
     id: diagnostics
     attributes:
-      label: Agent Grid environment check output
-      placeholder: Paste the output from the "Agent Grid" output channel here.
+      label: Agent Grid diagnostics or support bundle
+      placeholder: Paste the output from the "Agent Grid" output channel or the exported support bundle here.

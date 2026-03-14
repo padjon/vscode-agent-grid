@@ -2,7 +2,7 @@
   "name": "vscode-agent-grid",
   "displayName": "Agent Grid: AI Terminal Workspace",
   "description": "Run Claude Code, Codex, Gemini CLI, Aider, Goose, and your own commands side by side in a persistent tmux-backed VS Code terminal workspace.",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "publisher": "padjon",
   "author": "Patrick Schäfer",
   "repository": {
@@ -47,6 +47,7 @@
   },
   "activationEvents": [
     "onCommand:agentGrid.create",
+    "onView:agentGrid.sidebar",
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
@@ -112,8 +113,116 @@
         "command": "agentGrid.openWalkthrough",
         "title": "Open Getting Started Guide",
         "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.openRepoConfig",
+        "title": "Open Repo Config",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.saveWorkspaceToRepoConfig",
+        "title": "Save Workspace To Repo Config",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.saveProfileToRepoConfig",
+        "title": "Save Profile To Repo Config",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.importRepoConfigToSettings",
+        "title": "Import Repo Config To Settings",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.clearWorkspaceOverrides",
+        "title": "Clear Workspace Overrides",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.migrateSettingsToRepoConfig",
+        "title": "Migrate Settings To Repo Config",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.exportSupportBundle",
+        "title": "Export Support Bundle",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.openIssueTracker",
+        "title": "Open Issue Tracker",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.exportUsageReport",
+        "title": "Export Usage Report",
+        "category": "Agent Grid"
+      },
+      {
+        "command": "agentGrid.resetUsageReport",
+        "title": "Reset Usage Report",
+        "category": "Agent Grid"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentGrid",
+          "title": "Agent Grid",
+          "icon": "assets/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "agentGrid": [
+        {
+          "id": "agentGrid.sidebar",
+          "name": "Workspace"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "agentGrid.sidebar",
+        "contents": "Create a tmux-backed workspace for Claude Code, Codex, Gemini CLI, Aider, Goose, and your own terminal workflows.\n[Run Setup Wizard](command:agentGrid.setupWizard)\n[Create Workspace](command:agentGrid.create)\n[Open Getting Started Guide](command:agentGrid.openWalkthrough)\n[Run Environment Check](command:agentGrid.diagnose)",
+        "when": "agentGrid.showSidebarWelcome && agentGrid.hasWorkspaceFolder"
+      },
+      {
+        "view": "agentGrid.sidebar",
+        "contents": "Open a folder or workspace to configure Agent Grid for this repository.",
+        "when": "agentGrid.showSidebarWelcome && !agentGrid.hasWorkspaceFolder"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "agentGrid.create",
+          "when": "view == agentGrid.sidebar",
+          "group": "navigation"
+        },
+        {
+          "command": "agentGrid.showActions",
+          "when": "view == agentGrid.sidebar",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentGrid.diagnose",
+          "when": "view == agentGrid.sidebar",
+          "group": "navigation@2"
+        },
+        {
+          "command": "agentGrid.exportUsageReport",
+          "when": "view == agentGrid.sidebar",
+          "group": "navigation@3"
+        },
+        {
+          "command": "agentGrid.exportSupportBundle",
+          "when": "view == agentGrid.sidebar",
+          "group": "navigation@4"
+        }
+      ]
+    },
     "walkthroughs": [
       {
         "id": "getting-started",
@@ -171,6 +280,14 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Show the first-run Agent Grid onboarding prompt when the workspace has not been configured yet."
+        },
+        "agentGrid.enableUsageMetrics": {
+          "type": "boolean",
+          "default": false,
+          "tags": [
+            "telemetry"
+          ],
+          "markdownDescription": "Collect local aggregate usage counters for Agent Grid funnels and actions. This respects VS Code telemetry enablement, records no workspace names, commands, prompts, or pane contents, and only leaves the machine if you manually export and share the JSON report."
         },
         "agentGrid.tmuxCommand": {
           "type": "string",

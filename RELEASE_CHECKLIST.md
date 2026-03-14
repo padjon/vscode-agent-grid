@@ -14,7 +14,9 @@
 - Verify restore after restarting VS Code
 - Verify `Agent Grid: Save Current Workspace As Profile`
 - Verify `Agent Grid: Apply Saved Profile`
+- Verify repo config flows: open, save workspace, save profile, import to settings, clear overrides, migrate settings
 - Verify `Agent Grid: Run Environment Check`
+- Verify `Agent Grid: Export Support Bundle`
 - Verify pane actions: next, previous, restart, broadcast
 
 ## Marketplace

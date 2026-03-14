@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.5
+
+- added a native Agent Grid sidebar with workspace status, actions, presets, profiles, migration tools, and support actions
+- added repo-level `.agent-grid.json` support with merge behavior against local VS Code overrides
+- added commands to save workspace state and shared profiles directly into the repo config
+- added commands to import repo config into workspace settings, clear local overrides, and migrate settings into repo config
+- added project-aware preset adaptation for common frontend/backend folders and detected package scripts
+- added local-only usage metrics with manual JSON export and reset commands
+- added support bundle export and direct issue-tracker access for post-release debugging
+- expanded diagnostics and tests for repo config parsing and release packaging
+
 ## 1.0.4
 
 - repositioned Agent Grid as an AI terminal workspace for VS Code
