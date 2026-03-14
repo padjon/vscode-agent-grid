@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.7
+
+- removed the unfinished remote telemetry path and kept usage observation local-only
+- added direct email feedback support to `info@devsheep.de` from the extension support surface
+- updated the README to ask for issues and feature wishes via GitHub or email
+
 ## 1.0.6
 
 - fixed config precedence so repo-level `.agent-grid.json` sits between user defaults and workspace overrides

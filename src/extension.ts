@@ -54,6 +54,7 @@ const CLEAR_WORKSPACE_OVERRIDES_COMMAND = 'agentGrid.clearWorkspaceOverrides';
 const MIGRATE_SETTINGS_TO_REPO_CONFIG_COMMAND = 'agentGrid.migrateSettingsToRepoConfig';
 const EXPORT_SUPPORT_BUNDLE_COMMAND = 'agentGrid.exportSupportBundle';
 const OPEN_ISSUE_TRACKER_COMMAND = 'agentGrid.openIssueTracker';
+const EMAIL_FEEDBACK_COMMAND = 'agentGrid.emailFeedback';
 const EXPORT_USAGE_REPORT_COMMAND = 'agentGrid.exportUsageReport';
 const RESET_USAGE_REPORT_COMMAND = 'agentGrid.resetUsageReport';
 const SESSION_STATE_KEY = 'agentGrid.open';
@@ -232,6 +233,9 @@ class AgentGridController implements vscode.Disposable {
       }),
       vscode.commands.registerCommand(OPEN_ISSUE_TRACKER_COMMAND, async () => {
         await this.openIssueTracker();
+      }),
+      vscode.commands.registerCommand(EMAIL_FEEDBACK_COMMAND, async () => {
+        await this.emailFeedback();
       }),
       vscode.commands.registerCommand(EXPORT_USAGE_REPORT_COMMAND, async () => {
         await this.exportUsageReport();
@@ -706,6 +710,15 @@ class AgentGridController implements vscode.Disposable {
   private async openIssueTracker(): Promise<void> {
     this.usageMetrics.record('support', 'open_issue_tracker');
     await vscode.env.openExternal(vscode.Uri.parse('https://github.com/padjon/vscode-agent-grid/issues/new/choose'));
+  }
+
+  private async emailFeedback(): Promise<void> {
+    this.usageMetrics.record('support', 'email_feedback');
+    await vscode.env.openExternal(
+      vscode.Uri.parse(
+        'mailto:info@devsheep.de?subject=Agent%20Grid%20Feedback&body=Please%20tell%20us%20about%20issues%2C%20feature%20wishes%2C%20or%20workflow%20ideas.'
+      )
+    );
   }
 
   private async exportSupportBundle(): Promise<void> {
@@ -1405,6 +1418,13 @@ class AgentGridController implements vscode.Disposable {
         description: 'Open the Agent Grid issue templates on GitHub',
         run: async () => {
           await this.openIssueTracker();
+        }
+      },
+      {
+        label: 'Email Feedback',
+        description: 'Send issues, wishes, or workflow ideas to info@devsheep.de',
+        run: async () => {
+          await this.emailFeedback();
         }
       },
       {
@@ -2419,6 +2439,13 @@ function buildSupportNodes(): AgentGridSidebarNode[] {
       'Open the Agent Grid issue templates on GitHub',
       new vscode.ThemeIcon('issues'),
       OPEN_ISSUE_TRACKER_COMMAND
+    ),
+    buildActionNode(
+      'support-email-feedback',
+      'Email Feedback',
+      'Send issues, wishes, or workflow ideas to info@devsheep.de',
+      new vscode.ThemeIcon('mail'),
+      EMAIL_FEEDBACK_COMMAND
     ),
     buildActionNode(
       'support-run-diagnostics',

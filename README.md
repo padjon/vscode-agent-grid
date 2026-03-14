@@ -7,6 +7,8 @@ Run terminal-first AI workflows inside one persistent VS Code workspace.
 
 Agent Grid turns one native terminal tab into a tmux-backed workspace for Claude Code, Codex, Gemini CLI, Aider, Goose, test runners, and project commands. It keeps each workflow in a fixed lane, restores the workspace when VS Code comes back, and stays inside the editor instead of pushing you into separate apps or scattered terminal tabs.
 
+Please tell us about issues and feature wishes on GitHub or via mail at [info@devsheep.de](mailto:info@devsheep.de).
+
 ![Agent Grid hero showing a multi-agent terminal workspace inside VS Code](https://raw.githubusercontent.com/padjon/vscode-agent-grid/main/assets/marketplace-hero.png)
 
 ## Why Install It
@@ -152,8 +154,11 @@ Agent Grid now has a built-in support loop for post-release issues:
 - `Agent Grid: Run Environment Check` refreshes the output-channel diagnostics
 - `Agent Grid: Export Support Bundle` opens a markdown bundle with environment state, effective config, repo-config status, live pane state, and usage-metrics state
 - `Agent Grid: Open Issue Tracker` opens the GitHub issue templates
+- `Agent Grid: Email Feedback` opens a mail draft to [info@devsheep.de](mailto:info@devsheep.de)
 
 Use the `Safe for Public Issue` export mode for GitHub issues. It redacts absolute local paths by default.
+
+Please send bug reports and feature wishes either through GitHub issues or directly by mail to [info@devsheep.de](mailto:info@devsheep.de).
 
 That gives users and maintainers one consistent artifact for setup, WSL, tmux, restore, live pane state, and migration bugs.
 
@@ -249,7 +254,7 @@ The native `Agent Grid` sidebar gives you the main workflow without quick-pick h
 - repo config status, creation, and parse-error visibility
 - migration actions between repo config and workspace overrides
 - usage metrics status plus export and reset actions
-- support bundle export and direct issue-tracker access
+- support bundle export plus direct issue-tracker and email access
 - saved profiles that apply directly from the tree
 - built-in presets that write to workspace settings immediately
 - a readable overview of the currently configured panes
@@ -325,6 +330,7 @@ Example `agentGrid.profiles`:
 - `Agent Grid: Migrate Settings To Repo Config`
 - `Agent Grid: Export Support Bundle`
 - `Agent Grid: Open Issue Tracker`
+- `Agent Grid: Email Feedback`
 - `Agent Grid: Apply Workspace Preset`
 - `Agent Grid: Apply Saved Profile`
 - `Agent Grid: Show Actions`

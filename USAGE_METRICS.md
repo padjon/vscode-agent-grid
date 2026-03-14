@@ -57,7 +57,7 @@ They do not include:
   Buckets: `import_repo_to_settings`, `clear_workspace_overrides`, `migrate_settings_to_repo`
 
 - `support`
-  Buckets: `export_bundle`, `open_issue_tracker`
+  Buckets: `export_bundle`, `open_issue_tracker`, `email_feedback`
 
 - `diagnostics`
   Buckets: `run`
