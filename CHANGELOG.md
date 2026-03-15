@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1
+
+- fixed the Agent Grid sidebar contribution to register as a webview, which resolves the `There is no data provider registered` error
+- improved the activity-bar icon contrast for dark themes
+
 ## 1.1.0
 
 - rebuilt Agent Grid around a single sidebar-first editor with `Default Setup` and saved profiles as the core model
