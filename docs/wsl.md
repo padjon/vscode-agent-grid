@@ -18,6 +18,16 @@ sudo apt update
 sudo apt install tmux
 ```
 
+Install the extension build into a reachable VS Code WSL session:
+
+```bash
+npm run install:wsl
+```
+
+The installer first tries the normal `code` CLI and then falls back to the local VS Code server binary inside WSL if needed.
+
+If the command still reports that VS Code is not reachable, open the folder in VS Code WSL first and rerun it.
+
 ## Common Problems
 
 `tmux Missing`

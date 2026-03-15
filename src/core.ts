@@ -14,14 +14,6 @@ export interface WorkspaceSession {
   terminals: TerminalDefinition[];
 }
 
-export interface WorkspacePreset {
-  id: string;
-  label: string;
-  description: string;
-  layout: LayoutName;
-  terminals: TerminalDefinition[];
-}
-
 export interface WorkspaceProfile {
   name: string;
   layout: LayoutName;
@@ -59,18 +51,6 @@ export interface EffectiveWorkspaceConfig {
   layers: EffectiveConfigLayers;
 }
 
-export interface UsageMetricsReport {
-  generatedAt: string;
-  extensionVersion: string;
-  settings: {
-    enableUsageMetrics: boolean;
-    vscodeTelemetryEnabled: boolean;
-    active: boolean;
-  };
-  notes: string[];
-  events: Record<string, unknown>;
-}
-
 export interface SupportBundlePane {
   name: string;
   cwd?: string;
@@ -102,15 +82,9 @@ export interface SupportBundleInput {
   effectiveLayout: LayoutName;
   effectivePanes: SupportBundlePane[];
   effectiveConfigSource: string;
+  activeSetup: string;
   livePanes: SupportBundleLivePane[];
-  usageMetrics: {
-    enabledInSettings: boolean;
-    vscodeTelemetryEnabled: boolean;
-    active: boolean;
-    storedEvents: number;
-  };
   repoConfig: RepoConfig;
-  usageReport: UsageMetricsReport;
   safeForPublic: boolean;
 }
 
@@ -119,111 +93,6 @@ export const DEFAULT_TERMINALS: TerminalDefinition[] = [
   { name: 'Agent 2', startupCommand: '', cwd: '${workspaceFolder}' },
   { name: 'Agent 3', startupCommand: '', cwd: '${workspaceFolder}' },
   { name: 'Agent 4', startupCommand: '', cwd: '${workspaceFolder}' }
-];
-
-export const BUILTIN_PRESETS: WorkspacePreset[] = [
-  {
-    id: 'solo-dev',
-    label: 'Solo Dev Workspace',
-    description: 'One agent, one test pane, and one shell for focused daily work.',
-    layout: 'main-horizontal',
-    terminals: [
-      { name: 'Agent', startupCommand: '', cwd: '${workspaceFolder}' },
-      { name: 'Tests', startupCommand: 'npm run test:watch', cwd: '${workspaceFolder}' },
-      { name: 'Shell', startupCommand: '', cwd: '${workspaceFolder}' }
-    ]
-  },
-  {
-    id: 'claude-codex-tests',
-    label: 'Claude + Codex + Tests',
-    description: 'Claude Code, Codex, tests, and a general shell in a tiled workspace.',
-    layout: 'tiled',
-    terminals: [
-      { name: 'Claude', startupCommand: 'claude', cwd: '${workspaceFolder}' },
-      { name: 'Codex', startupCommand: 'codex', cwd: '${workspaceFolder}' },
-      { name: 'Tests', startupCommand: 'npm run test:watch', cwd: '${workspaceFolder}' },
-      { name: 'Shell', startupCommand: '', cwd: '${workspaceFolder}' }
-    ]
-  },
-  {
-    id: 'claude-focused',
-    label: 'Claude Code Focus',
-    description: 'Claude Code as the main pane with supporting shells.',
-    layout: 'main-vertical',
-    terminals: [
-      { name: 'Claude', startupCommand: 'claude', cwd: '${workspaceFolder}' },
-      { name: 'Tests', startupCommand: 'npm run test:watch', cwd: '${workspaceFolder}' },
-      { name: 'Lint', startupCommand: 'npm run lint -- --watch', cwd: '${workspaceFolder}' }
-    ]
-  },
-  {
-    id: 'codex-focused',
-    label: 'OpenAI Codex Focus',
-    description: 'Codex as the main pane with tests and shell support.',
-    layout: 'main-vertical',
-    terminals: [
-      { name: 'Codex', startupCommand: 'codex', cwd: '${workspaceFolder}' },
-      { name: 'Tests', startupCommand: 'npm run test:watch', cwd: '${workspaceFolder}' },
-      { name: 'Shell', startupCommand: '', cwd: '${workspaceFolder}' }
-    ]
-  },
-  {
-    id: 'gemini',
-    label: 'Gemini CLI Workspace',
-    description: 'Gemini CLI with tests and a command pane.',
-    layout: 'main-horizontal',
-    terminals: [
-      { name: 'Gemini', startupCommand: 'gemini', cwd: '${workspaceFolder}' },
-      { name: 'Tests', startupCommand: 'npm run test:watch', cwd: '${workspaceFolder}' },
-      { name: 'Shell', startupCommand: '', cwd: '${workspaceFolder}' }
-    ]
-  },
-  {
-    id: 'aider',
-    label: 'Aider Workspace',
-    description: 'Aider with shell and test panes.',
-    layout: 'main-horizontal',
-    terminals: [
-      { name: 'Aider', startupCommand: 'aider', cwd: '${workspaceFolder}' },
-      { name: 'Tests', startupCommand: 'npm run test:watch', cwd: '${workspaceFolder}' },
-      { name: 'Shell', startupCommand: '', cwd: '${workspaceFolder}' }
-    ]
-  },
-  {
-    id: 'goose',
-    label: 'Goose Workspace',
-    description: 'Goose with shell and test panes.',
-    layout: 'main-horizontal',
-    terminals: [
-      { name: 'Goose', startupCommand: 'goose', cwd: '${workspaceFolder}' },
-      { name: 'Tests', startupCommand: 'npm run test:watch', cwd: '${workspaceFolder}' },
-      { name: 'Shell', startupCommand: '', cwd: '${workspaceFolder}' }
-    ]
-  },
-  {
-    id: 'frontend-backend-tests-ops',
-    label: 'Frontend / Backend / Tests / Ops',
-    description: 'A classic four-lane engineering layout for teams.',
-    layout: 'tiled',
-    terminals: [
-      { name: 'Frontend', startupCommand: '', cwd: '${workspaceFolder}/apps/frontend' },
-      { name: 'Backend', startupCommand: '', cwd: '${workspaceFolder}/apps/backend' },
-      { name: 'Tests', startupCommand: 'npm run test:watch', cwd: '${workspaceFolder}' },
-      { name: 'Ops', startupCommand: '', cwd: '${workspaceFolder}' }
-    ]
-  },
-  {
-    id: 'mixed-agents',
-    label: 'Mixed Agents Workspace',
-    description: 'Claude Code, Codex, Gemini CLI, and tests in one tiled workspace.',
-    layout: 'tiled',
-    terminals: [
-      { name: 'Claude', startupCommand: 'claude', cwd: '${workspaceFolder}' },
-      { name: 'Codex', startupCommand: 'codex', cwd: '${workspaceFolder}' },
-      { name: 'Gemini', startupCommand: 'gemini', cwd: '${workspaceFolder}' },
-      { name: 'Tests', startupCommand: 'npm run test:watch', cwd: '${workspaceFolder}' }
-    ]
-  }
 ];
 
 export function buildTmuxBootstrapScript(
@@ -519,6 +388,7 @@ export function buildSupportBundleMarkdown(input: SupportBundleInput): string {
     `- Terminal open: ${input.terminalOpen ? 'yes' : 'no'}`,
     `- Detached tmux session: ${input.detachedTmuxSession ? 'yes' : 'no'}`,
     `- Effective config source: ${input.effectiveConfigSource}`,
+    `- Active setup: ${input.activeSetup}`,
     `- Effective tmux command: ${tmuxCommand}`,
     `- Effective layout: ${input.effectiveLayout}`,
     `- Effective panes: ${input.effectivePanes.length}`,
@@ -542,23 +412,10 @@ export function buildSupportBundleMarkdown(input: SupportBundleInput): string {
         })
       : ['- No live pane state available']),
     '',
-    '## Usage Metrics State',
-    '',
-    `- Metrics enabled in settings: ${input.usageMetrics.enabledInSettings ? 'yes' : 'no'}`,
-    `- VS Code telemetry enabled: ${input.usageMetrics.vscodeTelemetryEnabled ? 'yes' : 'no'}`,
-    `- Metrics active: ${input.usageMetrics.active ? 'yes' : 'no'}`,
-    `- Stored events: ${input.usageMetrics.storedEvents}`,
-    '',
     '## Repo Config JSON',
     '',
     '```json',
     JSON.stringify(input.repoConfig ?? {}, null, 2),
-    '```',
-    '',
-    '## Effective Usage Report',
-    '',
-    '```json',
-    JSON.stringify(input.usageReport, null, 2),
     '```'
   ].join('\n');
 }

@@ -197,27 +197,17 @@ test('buildSupportBundleMarkdown defaults to safe redaction when requested', () 
     effectiveLayout: 'tiled',
     effectivePanes: [{ name: 'Claude', cwd: '/home/alice/project', startupCommand: 'claude' }],
     effectiveConfigSource: 'repo config + workspace overrides',
+    activeSetup: 'Profile: Review',
     livePanes: [{ index: 0, active: true, title: 'Claude', currentCommand: 'claude', currentPath: '/home/alice/project' }],
-    usageMetrics: {
-      enabledInSettings: true,
-      vscodeTelemetryEnabled: true,
-      active: true,
-      storedEvents: 5
-    },
     repoConfig: { layout: 'tiled' },
-    usageReport: {
-      generatedAt: '2026-03-14T12:00:00.000Z',
-      extensionVersion: '1.0.5',
-      settings: { enableUsageMetrics: true, vscodeTelemetryEnabled: true, active: true },
-      notes: [],
-      events: {}
-    },
     safeForPublic: true
   });
 
   assert.match(markdown, /Mode: Safe for public issue/);
   assert.match(markdown, /Workspace root: <workspace>/);
   assert.match(markdown, /Repo config path: <workspace>\/\.agent-grid\.json/);
+  assert.match(markdown, /Active setup: Profile: Review/);
   assert.match(markdown, /Effective tmux command: ~\/\.\.\.\/tmux/);
+  assert.doesNotMatch(markdown, /Usage Metrics/);
   assert.doesNotMatch(markdown, /\/home\/alice\/project/);
 });

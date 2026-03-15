@@ -116,7 +116,7 @@
 
     <rect x="782" y="556" width="356" height="1" fill="white" fill-opacity="0.08"/>
 
-    <text x="782" y="592" fill="#8FE8D9" font-family="DejaVu Sans, Segoe UI, Arial, sans-serif" font-size="16" font-weight="700">Setup wizard</text>
-    <text x="914" y="592" fill="#D0E1F1" font-family="DejaVu Sans, Segoe UI, Arial, sans-serif" font-size="16">presets, profiles, diagnostics</text>
+    <text x="782" y="592" fill="#8FE8D9" font-family="DejaVu Sans, Segoe UI, Arial, sans-serif" font-size="16" font-weight="700">Sidebar editor</text>
+    <text x="920" y="592" fill="#D0E1F1" font-family="DejaVu Sans, Segoe UI, Arial, sans-serif" font-size="16">profiles, starters, diagnostics</text>
   </g>
 </svg>

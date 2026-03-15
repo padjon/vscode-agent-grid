@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.0
+
+- rebuilt Agent Grid around a single sidebar-first editor with `Default Setup` and saved profiles as the core model
+- separated detected CLI starters from profiles and added a built-in `Custom` starter for blank setups
+- added a graphical grid preview in the sidebar, including visible hidden panes during live tmux sessions
+- added live pane hide/restore and layout switching without recreating tmux contents
+- removed usage metrics, migration UX, status bar state, and other stale surface area that made the product harder to understand
+- reduced the public command palette surface to the primary setup and support actions
+- improved terminal creation behavior so Agent Grid restores the previous terminal creation context after opening its editor-area terminal
+- moved SVG asset rendering to a repeatable `rsvg-convert`-based repo script
+- updated Marketplace/docs/support copy to match the simplified product model
+
 ## 1.0.8
 
 - simplified the main UX around `Configure Workspace`, `Create Workspace`, `Current Setup`, and collapsed advanced actions

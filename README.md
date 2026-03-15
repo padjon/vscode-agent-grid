@@ -33,16 +33,16 @@ Agent Grid is built for developers who already like terminal-first tools:
 
 - One pinned VS Code terminal tab named `agent-grid`
 - A tmux-backed pane workspace with configurable layouts
-- A native `Agent Grid` sidebar centered on `Configure Workspace`, `Create Workspace`, and the current setup
+- A sidebar-first setup UI with `Default Setup`, saved profiles, and detected starters
 - Automatic attach when a matching tmux session already exists
 - Optional startup commands for each pane on fresh workspace creation
 - Restore on the next VS Code start when the workspace was left open
-- Built-in presets to bootstrap common agent and task layouts
-- Optional `.agent-grid.json` repo config for shared defaults across the team
-- A custom setup flow with repo, workspace, or global-default save targets
-- Setup wizard suggestions that only use detected CLIs and relevant project scripts
-- Optional local usage metrics with manual JSON export for funnel analysis
-- Example repo configs and workflow docs for team onboarding, WSL, and common agent layouts
+- Detected CLI starters that can replace the current editor contents
+- Named profiles that you can save, update, delete, and select as the active setup
+- Optional `.agent-grid.json` repo sharing in an advanced section
+- Live layout switching without recreating panes
+- Temporary hiding and restoring of live panes in the current tmux session
+- Example docs for team onboarding and WSL
 
 ## Real Workspace
 
@@ -61,36 +61,43 @@ If `tmux` is missing, Agent Grid will guide you toward the right install path fo
 2. Open a project in VS Code
 3. Open the `Agent Grid` sidebar in the activity bar
 4. Run `Configure Workspace`
-5. Choose whether the setup should apply to this repo, this workspace, or your global defaults
-6. Create the workspace
+5. Choose `Default Setup` or a profile as the active setup
+6. Edit the panes directly in the sidebar form
+7. Create the workspace
 
-You can still access the same flow from the Command Palette with `Agent Grid: Configure Workspace`, `Agent Grid: Run Setup Wizard`, or `Agent Grid: Open Advanced Actions`.
+The command palette is intentionally smaller now. The main entry points are `Agent Grid: Configure Workspace` and `Agent Grid: Create or Recreate Workspace`.
 
 ## Custom Setup
 
 `Configure Workspace` is the main path now:
 
-- choose where to save the setup:
-  `This Repo`, `This VS Code Workspace`, or `My Default For All Workspaces`
-- choose `Custom Setup`, `Use Current Setup`, or one of the relevant detected suggestions
-- define the pane count, pane names, startup commands, working directories, and tmux layout
+- choose the active setup at the top:
+  `Default Setup` or a saved profile
+- optionally load a detected starter into the current editor
+- edit pane count, pane names, startup commands, working directories, and layout directly in the sidebar
+- save the current setup, save it as a new profile, or update/delete the selected profile
+- create or recreate the workspace from that active setup
 
-If you choose `My Default For All Workspaces`, Agent Grid saves the layout into user settings so it becomes the base config everywhere. Repo config and workspace-specific overrides can still replace it in individual projects.
+`Default Setup` is your base configuration across workspaces. Profiles are named reusable setups that you can switch to without losing the default.
 
-You can use that global-default path even when you are not setting up a repo-specific configuration yet.
+The sidebar also has:
+
+- `Apply To All` for startup commands
+- `Send Now` to broadcast a command to every live pane
+- live layout switching without recreating tmux panes
+- temporary hide/show for running panes, with hidden panes shown in the UI
+
+That active setup is what Agent Grid uses when you create or reattach the workspace.
 
 ## Repo Config
 
-Agent Grid can load a committed repo-level config file from the workspace root:
+Repo sharing is now an advanced option.
+
+If you switch the advanced storage mode to `Shared In Repo`, Agent Grid saves the default setup or profile into `.agent-grid.json` so the repository can share it.
 
 - `.agent-grid.json` is the shared base config for the repository
-- `agentGrid.*` VS Code settings still override it for local differences
-- `Agent Grid: Open Repo Config` creates the file from your current effective setup if it does not exist yet
-- `Agent Grid: Save Workspace To Repo Config` writes the current effective layout and panes into the repo file
-- `Agent Grid: Save Profile To Repo Config` appends or updates a named shared profile in the repo file
-- `Agent Grid: Import Repo Config To Settings` copies the repo config into workspace overrides
-- `Agent Grid: Clear Workspace Overrides` removes local overrides so the repo config or defaults take over
-- `Agent Grid: Migrate Settings To Repo Config` moves the current local setup into the shared repo file
+- personal settings are still used when repo sharing is not selected
+- the advanced storage hover explains the repo-sharing behavior in the sidebar
 
 Example `.agent-grid.json`:
 
@@ -150,25 +157,12 @@ Example `.agent-grid.json`:
 }
 ```
 
-## Usage Metrics
-
-Agent Grid can collect local aggregate usage counters to help you understand onboarding and feature adoption after release.
-
-- disabled by default
-- only active when `agentGrid.enableUsageMetrics` is enabled
-- also respects the global VS Code telemetry setting
-- records aggregate event counts only
-- does not record workspace names, file paths, commands, prompts, or pane contents
-- exports only when you manually run `Agent Grid: Export Usage Report`
-
-Documented event names and buckets are listed in [USAGE_METRICS.md](./USAGE_METRICS.md).
-
 ## Support
 
-Agent Grid now has a built-in support loop for post-release issues:
+Agent Grid keeps support tools out of the main configuration flow, but they are still available when something breaks:
 
 - `Agent Grid: Run Environment Check` refreshes the output-channel diagnostics
-- `Agent Grid: Export Support Bundle` opens a markdown bundle with environment state, effective config, repo-config status, live pane state, and usage-metrics state
+- `Agent Grid: Export Support Bundle` opens a markdown bundle with environment state, effective config, active setup, and live pane state
 - `Agent Grid: Open Issue Tracker` opens the GitHub issue templates
 - `Agent Grid: Email Feedback` opens a mail draft to [info@devsheep.de](mailto:info@devsheep.de)
 
@@ -176,7 +170,7 @@ Use the `Safe for Public Issue` export mode for GitHub issues. It redacts absolu
 
 Please send bug reports and feature wishes either through GitHub issues or directly by mail to [info@devsheep.de](mailto:info@devsheep.de).
 
-That gives users and maintainers one consistent artifact for setup, WSL, tmux, restore, live pane state, and migration bugs.
+That gives users and maintainers one consistent artifact for setup, WSL, tmux, restore, and live pane state issues.
 
 ## Guides And Examples
 
@@ -239,103 +233,57 @@ Available values for `agentGrid.layout`:
 - `agentGrid.autoRestore`: reopen the workspace on the next VS Code start when it was left open
 - `agentGrid.promptOnboarding`: show or suppress the first-run setup prompt
 
-## Presets
+## Sidebar Model
 
-Built-in presets are included for:
+The sidebar is the product now.
 
-- Solo dev
-- Claude Code
-- OpenAI Codex
-- Gemini CLI
-- Aider
-- Goose
-- Mixed agent plus test workflow
-- Frontend, backend, tests, ops
+At the top you choose the active setup:
 
-Use `Agent Grid: Apply Workspace Preset` to write one into your workspace settings.
+- `Default Setup`
+- or one of your saved profiles
 
-When possible, Agent Grid adapts preset startup commands and pane directories to the current repository. For example, it will prefer detected `test` or `test:watch` scripts and common frontend/backend folders instead of assuming one fixed project layout.
+Below that you can optionally use `Start from`:
 
-You can also define repository-specific reusable profiles in `agentGrid.profiles` and apply them later with `Agent Grid: Apply Saved Profile`.
+- `Custom`
+- detected CLI starters for tools that are actually installed
 
-If you already have a workspace configuration you like, run `Agent Grid: Save Current Workspace As Profile` to append it to `agentGrid.profiles` in workspace settings.
+Starters are only templates for the current editor. Profiles are your saved reusable setups.
 
-## Sidebar
+The editor itself lets you:
 
-The sidebar is simplified around the main workflow:
+- choose a layout visually
+- see a graphical preview of visible and hidden panes
+- change pane count
+- edit pane names, startup commands, and working directories
+- apply one startup command to all panes
+- save the current setup
+- save as a new profile
+- update or delete the active profile
+- save and create the workspace in one step
 
-- `Workspace`: configure the setup, create the workspace, or rerun the setup wizard
-- `Current Setup`: see where the config comes from, which layout is active, and which panes are configured
-- `Support`: diagnostics, support bundle, GitHub issues, and email feedback
-- `Advanced`: profiles, presets, repo config, migration, usage reports, and live pane actions
+Live workspace controls in the sidebar:
 
-Example `agentGrid.profiles`:
+- broadcast a command to all visible panes
+- switch layouts without recreating panes
+- hide a live pane temporarily
+- restore hidden panes later
 
-```json
-{
-  "agentGrid.profiles": [
-    {
-      "name": "Daily Solo",
-      "layout": "main-horizontal",
-      "terminals": [
-        {
-          "name": "Claude",
-          "startupCommand": "claude",
-          "cwd": "${workspaceFolder}"
-        },
-        {
-          "name": "Tests",
-          "startupCommand": "npm run test:watch",
-          "cwd": "${workspaceFolder}"
-        },
-        {
-          "name": "Shell",
-          "startupCommand": "",
-          "cwd": "${workspaceFolder}"
-        }
-      ]
-    },
-    {
-      "name": "Review Mode",
-      "layout": "tiled",
-      "terminals": [
-        {
-          "name": "Codex",
-          "startupCommand": "codex",
-          "cwd": "${workspaceFolder}"
-        },
-        {
-          "name": "Claude",
-          "startupCommand": "claude",
-          "cwd": "${workspaceFolder}"
-        },
-        {
-          "name": "Tests",
-          "startupCommand": "npm test",
-          "cwd": "${workspaceFolder}"
-        },
-        {
-          "name": "Shell",
-          "startupCommand": "",
-          "cwd": "${workspaceFolder}"
-        }
-      ]
-    }
-  ]
-}
-```
+Repo sharing stays in the advanced storage section. That writes the setup into `.agent-grid.json` for team use.
 
 ## Commands
 
+Visible in the command palette:
+
 - `Agent Grid: Configure Workspace`
 - `Agent Grid: Create or Recreate Workspace`
-- `Agent Grid: Run Setup Wizard`
-- `Agent Grid: Open Getting Started Guide`
-- `Agent Grid: Open Advanced Actions`
-- `Agent Grid: Export Support Bundle`
-- `Agent Grid: Open Issue Tracker`
-- `Agent Grid: Email Feedback`
 - `Agent Grid: Run Environment Check`
+
+Available from the sidebar support area:
+
+- guide
+- support bundle export
+- GitHub issues
+- email feedback
 
 ## Command Behavior
 
@@ -348,18 +296,11 @@ Example `agentGrid.profiles`:
 
 `Agent Grid: Run Environment Check`
 
-- writes the current environment, tmux detection, layout, and session state into the `Agent Grid` output channel
+- writes the current environment, tmux detection, layout, active setup, and session state into the `Agent Grid` output channel
 - helps users diagnose missing tmux, wrong runtime, or detached-session states
-- includes repo config and usage metrics state
-
-`Agent Grid: Run Setup Wizard`
-
-- detects common agent CLIs such as Claude, Codex, Gemini, Aider, and Goose
-- only suggests layouts that are relevant to the CLIs and project signals detected in this workspace
-- always offers `Custom Setup` as an option
-- adapts suggested commands and pane directories to detected package scripts and common repo folders
+- includes repo config and live pane state when available
 
 `Agent Grid: Open Getting Started Guide`
 
 - opens the built-in walkthrough from the VS Code walkthrough UI
-- gives first-time users a guided path through setup, creation, and profile saving
+- gives first-time users a short path through configuration and workspace creation

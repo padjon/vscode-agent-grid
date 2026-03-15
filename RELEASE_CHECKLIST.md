@@ -9,15 +9,16 @@
 ## Manual
 
 - Open the extension in an Extension Development Host
-- Verify `Agent Grid: Run Setup Wizard`
+- Verify the sidebar-first `Configure Workspace` flow
 - Verify `Agent Grid: Create or Recreate Workspace`
 - Verify restore after restarting VS Code
-- Verify `Agent Grid: Save Current Workspace As Profile`
-- Verify `Agent Grid: Apply Saved Profile`
-- Verify repo config flows: open, save workspace, save profile, import to settings, clear overrides, migrate settings
+- Verify `Default Setup` and saved profile switching
+- Verify `Start from` with `Custom` and detected CLI starters
+- Verify advanced repo sharing via `.agent-grid.json`
 - Verify `Agent Grid: Run Environment Check`
 - Verify `Agent Grid: Export Support Bundle`
-- Verify pane actions: next, previous, restart, broadcast
+- Verify live pane actions: broadcast, switch layout, hide pane, restore hidden pane
+- Verify terminal creation location is restored after opening Agent Grid
 
 ## Marketplace
 

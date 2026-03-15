@@ -4,30 +4,24 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 import {
-  BUILTIN_PRESETS,
   buildSupportBundleMarkdown,
   buildTmuxBootstrapScript,
-  describeEffectiveConfigLayers,
   mergeProfiles,
   normalizeProfiles,
   normalizeTerminalDefinitions,
   parseRepoConfig,
-  redactPathForPublicReport,
   readLayoutName,
   resolveEffectiveWorkspaceConfig,
   sanitizeTmuxName
 } from './core';
 import type {
-  ConfigLayerSource,
   EffectiveConfigLayers,
   LayoutName,
   RepoConfig,
   SettingsLayerConfig,
   SupportBundleLivePane,
   SupportBundlePane,
-  UsageMetricsReport,
   TerminalDefinition,
-  WorkspacePreset,
   WorkspaceProfile,
   WorkspaceSession
 } from './core';
@@ -36,50 +30,30 @@ const EXTENSION_NAMESPACE = 'agentGrid';
 const SIDEBAR_VIEW_ID = 'agentGrid.sidebar';
 const CONFIGURE_WORKSPACE_COMMAND = 'agentGrid.configureWorkspace';
 const CREATE_COMMAND = 'agentGrid.create';
-const SETUP_PRESET_COMMAND = 'agentGrid.setupPreset';
-const SHOW_ACTIONS_COMMAND = 'agentGrid.showActions';
-const APPLY_PROFILE_COMMAND = 'agentGrid.applyProfile';
-const FOCUS_NEXT_PANE_COMMAND = 'agentGrid.focusNextPane';
-const FOCUS_PREVIOUS_PANE_COMMAND = 'agentGrid.focusPreviousPane';
-const RESTART_ACTIVE_PANE_COMMAND = 'agentGrid.restartActivePane';
-const BROADCAST_COMMAND = 'agentGrid.broadcastCommand';
 const DIAGNOSE_COMMAND = 'agentGrid.diagnose';
-const SAVE_PROFILE_COMMAND = 'agentGrid.saveProfile';
-const SETUP_WIZARD_COMMAND = 'agentGrid.setupWizard';
 const OPEN_WALKTHROUGH_COMMAND = 'agentGrid.openWalkthrough';
-const OPEN_REPO_CONFIG_COMMAND = 'agentGrid.openRepoConfig';
-const SAVE_WORKSPACE_TO_REPO_CONFIG_COMMAND = 'agentGrid.saveWorkspaceToRepoConfig';
-const SAVE_PROFILE_TO_REPO_CONFIG_COMMAND = 'agentGrid.saveProfileToRepoConfig';
-const IMPORT_REPO_CONFIG_TO_SETTINGS_COMMAND = 'agentGrid.importRepoConfigToSettings';
-const CLEAR_WORKSPACE_OVERRIDES_COMMAND = 'agentGrid.clearWorkspaceOverrides';
-const MIGRATE_SETTINGS_TO_REPO_CONFIG_COMMAND = 'agentGrid.migrateSettingsToRepoConfig';
 const EXPORT_SUPPORT_BUNDLE_COMMAND = 'agentGrid.exportSupportBundle';
 const OPEN_ISSUE_TRACKER_COMMAND = 'agentGrid.openIssueTracker';
 const EMAIL_FEEDBACK_COMMAND = 'agentGrid.emailFeedback';
-const EXPORT_USAGE_REPORT_COMMAND = 'agentGrid.exportUsageReport';
-const RESET_USAGE_REPORT_COMMAND = 'agentGrid.resetUsageReport';
+
 const SESSION_STATE_KEY = 'agentGrid.open';
 const ONBOARDING_KEY = 'agentGrid.onboarded';
-const USAGE_METRICS_KEY = 'agentGrid.usageMetrics';
+const ACTIVE_SETUP_KEY = 'agentGrid.activeSetup';
+
 const TERMINAL_TITLE = 'agent-grid';
 const DEFAULT_WINDOW_NAME = 'grid';
 const REPO_CONFIG_FILE = '.agent-grid.json';
+const HIDDEN_WINDOW_PREFIX = 'agent-grid-hidden';
 const PIN_EDITOR_COMMANDS = ['workbench.action.pinEditor', 'workbench.action.keepEditor'];
 
 type WorkspaceReason = 'manual' | 'restore';
 type EnvironmentState = 'ready' | 'tmux-missing' | 'native-windows-unsupported';
+type ConfigurationDestination = 'user' | 'repo';
 
 interface EnvironmentInfo {
   state: EnvironmentState;
   detail: string;
 }
-
-interface PaneInfo {
-  index: number;
-  active: boolean;
-}
-
-interface LivePaneInfo extends SupportBundleLivePane {}
 
 interface RepoConfigState {
   path?: string;
@@ -90,97 +64,156 @@ interface RepoConfigState {
 
 interface WorkspaceProjectInfo {
   availableScripts: Set<string>;
-  frontendRelativePath?: string;
-  backendRelativePath?: string;
   preferredTestCommand?: string;
-  preferredLintCommand?: string;
 }
-
-interface UsageMetricsEntry {
-  count: number;
-  firstSeen: string;
-  lastSeen: string;
-  buckets?: Record<string, number>;
-}
-
-interface UsageMetricsState {
-  schemaVersion: 1;
-  updatedAt?: string;
-  events: Record<string, UsageMetricsEntry>;
-}
-
-interface UsageMetricsSnapshot {
-  enabledInSettings: boolean;
-  vscodeTelemetryEnabled: boolean;
-  active: boolean;
-  totalEvents: number;
-  eventTypes: number;
-  updatedAt?: string;
-}
-
-interface AgentGridSidebarSnapshot {
-  hasWorkspaceFolder: boolean;
-  hasConfiguredWorkspace: boolean;
-  shouldShowWelcome: boolean;
-  environment: EnvironmentInfo;
-  terminalOpen: boolean;
-  detached: boolean;
-  session: WorkspaceSession;
-  effectiveConfigLayers: EffectiveConfigLayers;
-  configSourceLabel: string;
-  profiles: WorkspaceProfile[];
-  presets: WorkspacePreset[];
-  repoConfig: RepoConfigState;
-  usageMetrics: UsageMetricsSnapshot;
-  livePanes: LivePaneInfo[];
-}
-
-interface AgentGridSidebarNode {
-  id: string;
-  label: string;
-  description?: string;
-  tooltip?: string;
-  icon?: vscode.ThemeIcon;
-  collapsibleState: vscode.TreeItemCollapsibleState;
-  command?: vscode.Command;
-  children?: AgentGridSidebarNode[];
-}
-
-type ConfigurationDestination = 'repo' | 'workspace' | 'user';
 
 interface ConfigurationTemplate {
   layout: LayoutName;
   terminals: TerminalDefinition[];
 }
 
+interface SidebarStarterOption {
+  id: string;
+  label: string;
+  description: string;
+  template: ConfigurationTemplate;
+}
+
+interface ActiveSetupOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
+interface ActiveSetupModel {
+  id: string;
+  kind: 'default' | 'profile';
+  label: string;
+  description: string;
+  profileName?: string;
+  template: ConfigurationTemplate;
+  storage: ConfigurationDestination;
+}
+
+interface HiddenPaneInfo {
+  windowName: string;
+  title: string;
+  currentCommand: string;
+}
+
+interface SidebarState {
+  hasWorkspaceFolder: boolean;
+  statusLabel: string;
+  statusDetail: string;
+  statusTone: 'idle' | 'running' | 'warning';
+  activeSetupId: string;
+  activeSetupLabel: string;
+  activeSetupDetail: string;
+  availableSetups: ActiveSetupOption[];
+  selectedStorage: ConfigurationDestination;
+  storageDetail: string;
+  availableDestinations: Array<{
+    value: ConfigurationDestination;
+    label: string;
+    description: string;
+    disabled?: boolean;
+  }>;
+  template: ConfigurationTemplate;
+  starterTemplates: SidebarStarterOption[];
+  canUpdateProfile: boolean;
+  canDeleteProfile: boolean;
+  canApplyLiveLayout: boolean;
+  hiddenPanes: HiddenPaneInfo[];
+}
+
+interface AgentGridSidebarActions {
+  onSelectActiveSetup: (setupId: string) => Promise<void>;
+  onSaveActiveSetup: (
+    setupId: string,
+    destination: ConfigurationDestination,
+    template: ConfigurationTemplate,
+    createWorkspace: boolean
+  ) => Promise<void>;
+  onSaveAsNewProfile: (
+    profileName: string,
+    destination: ConfigurationDestination,
+    template: ConfigurationTemplate,
+    createWorkspace: boolean
+  ) => Promise<void>;
+  onDeleteProfile: (profileName: string) => Promise<void>;
+  onBroadcastCommand: (command: string) => Promise<void>;
+  onApplyLiveLayout: (layout: LayoutName) => Promise<void>;
+  onHideLivePane: (paneIndex: number) => Promise<void>;
+  onRestoreHiddenPane: (windowName: string) => Promise<void>;
+  onRunDiagnostics: () => Promise<void>;
+  onExportSupportBundle: () => Promise<void>;
+  onOpenGuide: () => Promise<void>;
+  onOpenIssueTracker: () => Promise<void>;
+  onEmailFeedback: () => Promise<void>;
+}
+
 let controller: AgentGridController | undefined;
 
 class AgentGridController implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
-  private readonly statusBarItem: vscode.StatusBarItem;
   private readonly outputChannel: vscode.OutputChannel;
-  private readonly sidebarProvider: AgentGridSidebarProvider;
-  private readonly treeView: vscode.TreeView<AgentGridSidebarNode>;
-  private readonly usageMetrics: UsageMetricsService;
+  private readonly sidebarProvider: AgentGridSidebarWebviewProvider;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.outputChannel = vscode.window.createOutputChannel('Agent Grid');
-    this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    this.statusBarItem.command = CONFIGURE_WORKSPACE_COMMAND;
-    this.statusBarItem.show();
-    this.usageMetrics = new UsageMetricsService(context, this.outputChannel);
-    this.sidebarProvider = new AgentGridSidebarProvider();
-    this.treeView = vscode.window.createTreeView(SIDEBAR_VIEW_ID, {
-      treeDataProvider: this.sidebarProvider,
-      showCollapseAll: false
+    this.sidebarProvider = new AgentGridSidebarWebviewProvider(context.extensionUri, {
+      onSelectActiveSetup: async (setupId) => {
+        await this.setActiveSetupId(setupId);
+        await this.refreshSurface();
+      },
+      onSaveActiveSetup: async (setupId, destination, template, createWorkspace) => {
+        await this.saveActiveSetup(setupId, destination, template, createWorkspace);
+      },
+      onSaveAsNewProfile: async (profileName, destination, template, createWorkspace) => {
+        await this.saveAsNewProfile(profileName, destination, template, createWorkspace);
+      },
+      onDeleteProfile: async (profileName) => {
+        await this.deleteProfile(profileName);
+      },
+      onBroadcastCommand: async (command) => {
+        await this.broadcastCommand(command);
+      },
+      onApplyLiveLayout: async (layout) => {
+        await this.applyLiveLayout(layout);
+      },
+      onHideLivePane: async (paneIndex) => {
+        await this.hideLivePane(paneIndex);
+      },
+      onRestoreHiddenPane: async (windowName) => {
+        await this.restoreHiddenPane(windowName);
+      },
+      onRunDiagnostics: async () => {
+        await this.runDiagnostics();
+      },
+      onExportSupportBundle: async () => {
+        await this.exportSupportBundle();
+      },
+      onOpenGuide: async () => {
+        await this.openWalkthrough();
+      },
+      onOpenIssueTracker: async () => {
+        await this.openIssueTracker();
+      },
+      onEmailFeedback: async () => {
+        await this.emailFeedback();
+      }
     });
+
     const repoConfigWatcher = this.createRepoConfigWatcher();
 
     this.disposables.push(
       this.outputChannel,
-      this.statusBarItem,
-      this.treeView,
-      this.usageMetrics,
+      this.sidebarProvider,
+      vscode.window.registerWebviewViewProvider(SIDEBAR_VIEW_ID, this.sidebarProvider, {
+        webviewOptions: {
+          retainContextWhenHidden: true
+        }
+      }),
       ...(repoConfigWatcher ? [repoConfigWatcher] : []),
       vscode.commands.registerCommand(CONFIGURE_WORKSPACE_COMMAND, async () => {
         await this.configureWorkspace();
@@ -188,56 +221,11 @@ class AgentGridController implements vscode.Disposable {
       vscode.commands.registerCommand(CREATE_COMMAND, async () => {
         await this.openWorkspace('manual');
       }),
-      vscode.commands.registerCommand(SETUP_PRESET_COMMAND, async (presetId?: string) => {
-        await this.applyPreset(presetId);
-      }),
-      vscode.commands.registerCommand(APPLY_PROFILE_COMMAND, async (profileName?: string) => {
-        await this.applyProfile(profileName);
-      }),
-      vscode.commands.registerCommand(SHOW_ACTIONS_COMMAND, async () => {
-        await this.showActions();
-      }),
-      vscode.commands.registerCommand(FOCUS_NEXT_PANE_COMMAND, async () => {
-        await this.focusRelativePane(1);
-      }),
-      vscode.commands.registerCommand(FOCUS_PREVIOUS_PANE_COMMAND, async () => {
-        await this.focusRelativePane(-1);
-      }),
-      vscode.commands.registerCommand(RESTART_ACTIVE_PANE_COMMAND, async () => {
-        await this.restartActivePane();
-      }),
-      vscode.commands.registerCommand(BROADCAST_COMMAND, async () => {
-        await this.broadcastCommand();
-      }),
       vscode.commands.registerCommand(DIAGNOSE_COMMAND, async () => {
         await this.runDiagnostics();
       }),
-      vscode.commands.registerCommand(SAVE_PROFILE_COMMAND, async () => {
-        await this.saveCurrentWorkspaceAsProfile();
-      }),
-      vscode.commands.registerCommand(SETUP_WIZARD_COMMAND, async () => {
-        await this.runSetupWizard();
-      }),
       vscode.commands.registerCommand(OPEN_WALKTHROUGH_COMMAND, async () => {
         await this.openWalkthrough();
-      }),
-      vscode.commands.registerCommand(OPEN_REPO_CONFIG_COMMAND, async () => {
-        await this.openRepoConfig();
-      }),
-      vscode.commands.registerCommand(SAVE_WORKSPACE_TO_REPO_CONFIG_COMMAND, async () => {
-        await this.saveWorkspaceToRepoConfig();
-      }),
-      vscode.commands.registerCommand(SAVE_PROFILE_TO_REPO_CONFIG_COMMAND, async () => {
-        await this.saveProfileToRepoConfig();
-      }),
-      vscode.commands.registerCommand(IMPORT_REPO_CONFIG_TO_SETTINGS_COMMAND, async () => {
-        await this.importRepoConfigToSettings();
-      }),
-      vscode.commands.registerCommand(CLEAR_WORKSPACE_OVERRIDES_COMMAND, async () => {
-        await this.clearWorkspaceOverrides();
-      }),
-      vscode.commands.registerCommand(MIGRATE_SETTINGS_TO_REPO_CONFIG_COMMAND, async () => {
-        await this.migrateSettingsToRepoConfig();
       }),
       vscode.commands.registerCommand(EXPORT_SUPPORT_BUNDLE_COMMAND, async () => {
         await this.exportSupportBundle();
@@ -248,17 +236,10 @@ class AgentGridController implements vscode.Disposable {
       vscode.commands.registerCommand(EMAIL_FEEDBACK_COMMAND, async () => {
         await this.emailFeedback();
       }),
-      vscode.commands.registerCommand(EXPORT_USAGE_REPORT_COMMAND, async () => {
-        await this.exportUsageReport();
-      }),
-      vscode.commands.registerCommand(RESET_USAGE_REPORT_COMMAND, async () => {
-        await this.resetUsageReport();
-      }),
       vscode.window.onDidCloseTerminal((terminal) => {
         if (terminal.name === TERMINAL_TITLE && !this.findExistingTerminal()) {
           void this.context.workspaceState.update(SESSION_STATE_KEY, false);
         }
-
         void this.refreshSurface();
       }),
       vscode.window.onDidOpenTerminal(() => {
@@ -271,7 +252,6 @@ class AgentGridController implements vscode.Disposable {
       })
     );
 
-    this.usageMetrics.record('activate');
     void this.restoreOnStartup();
     void this.refreshSurface();
     void this.promptOnboarding();
@@ -289,8 +269,7 @@ class AgentGridController implements vscode.Disposable {
       return;
     }
 
-    const wasOpen = this.context.workspaceState.get<boolean>(SESSION_STATE_KEY, false);
-    if (!wasOpen) {
+    if (!this.context.workspaceState.get<boolean>(SESSION_STATE_KEY, false)) {
       return;
     }
 
@@ -307,40 +286,23 @@ class AgentGridController implements vscode.Disposable {
       return;
     }
 
-    const alreadyOnboarded = this.context.workspaceState.get<boolean>(ONBOARDING_KEY, false);
-    if (alreadyOnboarded) {
-      return;
-    }
-
-    if (this.hasConfiguredWorkspaceSettings() || this.hasRepoConfiguration()) {
-      await this.context.workspaceState.update(ONBOARDING_KEY, true);
+    if (this.context.workspaceState.get<boolean>(ONBOARDING_KEY, false)) {
       return;
     }
 
     const action = await vscode.window.showInformationMessage(
-      'Agent Grid can set up a tmux-backed workspace for your agents and tasks.',
-      'Run Setup Wizard',
+      'Agent Grid can set up a tmux-backed terminal workspace in the sidebar.',
+      'Configure Workspace',
       'Open Guide',
       'Dismiss'
     );
 
-    if (action === 'Run Setup Wizard') {
-      this.usageMetrics.record('onboarding_action', 'setup_wizard');
-      await this.context.workspaceState.update(ONBOARDING_KEY, true);
-      await this.runSetupWizard();
-      return;
-    }
+    await this.context.workspaceState.update(ONBOARDING_KEY, true);
 
-    if (action === 'Open Guide') {
-      this.usageMetrics.record('onboarding_action', 'open_guide');
-      await this.context.workspaceState.update(ONBOARDING_KEY, true);
+    if (action === 'Configure Workspace') {
+      await this.configureWorkspace();
+    } else if (action === 'Open Guide') {
       await this.openWalkthrough();
-      return;
-    }
-
-    if (action === 'Dismiss') {
-      this.usageMetrics.record('onboarding_action', 'dismiss');
-      await this.context.workspaceState.update(ONBOARDING_KEY, true);
     }
   }
 
@@ -363,719 +325,136 @@ class AgentGridController implements vscode.Disposable {
     return watcher;
   }
 
-  async getSidebarSnapshot(existingEnvironment?: EnvironmentInfo): Promise<AgentGridSidebarSnapshot> {
+  private async refreshSurface(existingEnvironment?: EnvironmentInfo): Promise<void> {
+    void existingEnvironment;
+    this.sidebarProvider.setState(await this.getSidebarState());
+  }
+
+  private async getSidebarState(): Promise<SidebarState> {
     const repoConfig = this.getRepoConfigState();
     const effectiveConfig = this.getEffectiveWorkspaceConfig(repoConfig.config);
-    const session = this.toWorkspaceSession(effectiveConfig);
-    const environment = existingEnvironment ?? (await this.inspectEnvironment(session));
-    const profiles = effectiveConfig.profiles;
+    const session = this.getSessionFromSettings(effectiveConfig);
+    const environment = await this.inspectEnvironment(session);
     const terminalOpen = Boolean(this.findExistingTerminal());
     const detached = environment.state === 'ready' ? await this.hasDetachedTmuxSession(session) : false;
-    const hasWorkspaceFolder = Boolean(vscode.workspace.workspaceFolders?.length);
-    const livePanes = environment.state === 'ready' && (terminalOpen || detached) ? await this.listLivePanes(session) : [];
-    const hasConfiguredWorkspace = this.hasConfiguredWorkspaceSettings() || this.hasRepoConfiguration(repoConfig) || profiles.length > 0;
-    const shouldShowWelcome = !hasWorkspaceFolder || (!hasConfiguredWorkspace && !terminalOpen && !detached);
+    const hiddenPanes = environment.state === 'ready' && (terminalOpen || detached) ? await this.listHiddenPanes(session) : [];
+    const activeSetup = this.getActiveSetupModel(effectiveConfig, repoConfig);
 
     return {
-      hasWorkspaceFolder,
-      hasConfiguredWorkspace,
-      shouldShowWelcome,
-      environment,
-      terminalOpen,
-      detached,
-      session,
-      effectiveConfigLayers: effectiveConfig.layers,
-      configSourceLabel: describeEffectiveConfigLayers(effectiveConfig.layers),
-      profiles,
-      presets: BUILTIN_PRESETS,
-      repoConfig,
-      usageMetrics: this.usageMetrics.getSnapshot(),
-      livePanes
-    };
-  }
-
-  private async refreshSurface(existingEnvironment?: EnvironmentInfo): Promise<void> {
-    await this.refreshStatus(existingEnvironment);
-    await this.refreshSidebar(existingEnvironment);
-  }
-
-  private async refreshSidebar(existingEnvironment?: EnvironmentInfo): Promise<void> {
-    const snapshot = await this.getSidebarSnapshot(existingEnvironment);
-    await vscode.commands.executeCommand('setContext', 'agentGrid.hasWorkspaceFolder', snapshot.hasWorkspaceFolder);
-    await vscode.commands.executeCommand('setContext', 'agentGrid.showSidebarWelcome', snapshot.shouldShowWelcome);
-    this.sidebarProvider.setSnapshot(snapshot);
-  }
-
-  private hasConfiguredWorkspaceSettings(): boolean {
-    const workspaceLayer = this.getWorkspaceSettingsLayer();
-    return Boolean(
-      workspaceLayer.tmuxCommand !== undefined ||
-        workspaceLayer.layout !== undefined ||
-        workspaceLayer.terminals !== undefined ||
-        workspaceLayer.profiles !== undefined
-    );
-  }
-
-  private hasRepoConfiguration(repoConfig: RepoConfigState = this.getRepoConfigState()): boolean {
-    if (!repoConfig.config) {
-      return false;
-    }
-
-    return Boolean(
-      repoConfig.config.tmuxCommand ||
-        repoConfig.config.layout ||
-        (repoConfig.config.terminals && repoConfig.config.terminals.length > 0) ||
-        (repoConfig.config.profiles && repoConfig.config.profiles.length > 0)
-    );
-  }
-
-  private getRepoConfigPath(): string | undefined {
-    const workspaceRoot = this.getWorkspaceRoot();
-    return workspaceRoot ? path.join(workspaceRoot, REPO_CONFIG_FILE) : undefined;
-  }
-
-  private getRepoConfigState(): RepoConfigState {
-    const repoConfigPath = this.getRepoConfigPath();
-    if (!repoConfigPath) {
-      return { exists: false };
-    }
-
-    if (!fs.existsSync(repoConfigPath)) {
-      return {
-        path: repoConfigPath,
-        exists: false
-      };
-    }
-
-    try {
-      const raw = fs.readFileSync(repoConfigPath, 'utf8');
-      return {
-        path: repoConfigPath,
-        exists: true,
-        config: parseRepoConfig(raw)
-      };
-    } catch (error) {
-      return {
-        path: repoConfigPath,
-        exists: true,
-        error: asErrorMessage(error)
-      };
-    }
-  }
-
-  private getWritableRepoConfig(): { path: string; config: RepoConfig } | undefined {
-    const repoConfig = this.getRepoConfigState();
-    if (!repoConfig.path) {
-      return undefined;
-    }
-
-    if (repoConfig.exists && repoConfig.error) {
-      return undefined;
-    }
-
-    return {
-      path: repoConfig.path,
-      config: repoConfig.config ?? {}
-    };
-  }
-
-  private async writeRepoConfig(config: RepoConfig): Promise<void> {
-    const writable = this.getWritableRepoConfig();
-    if (!writable) {
-      throw new Error(`Fix ${REPO_CONFIG_FILE} before saving to repo config.`);
-    }
-
-    fs.writeFileSync(writable.path, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
-    await this.refreshSurface();
-  }
-
-  private async updateWorkspaceOverrides(
-    values: Partial<Record<'tmuxCommand' | 'layout' | 'terminals' | 'profiles', unknown>>
-  ): Promise<void> {
-    await this.updateConfigurationTarget(vscode.ConfigurationTarget.Workspace, values);
-  }
-
-  private async updateUserDefaults(
-    values: Partial<Record<'tmuxCommand' | 'layout' | 'terminals' | 'profiles', unknown>>
-  ): Promise<void> {
-    await this.updateConfigurationTarget(vscode.ConfigurationTarget.Global, values);
-  }
-
-  private async updateConfigurationTarget(
-    target: vscode.ConfigurationTarget,
-    values: Partial<Record<'tmuxCommand' | 'layout' | 'terminals' | 'profiles', unknown>>
-  ): Promise<void> {
-    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
-
-    if ('tmuxCommand' in values) {
-      await config.update('tmuxCommand', values.tmuxCommand, target);
-    }
-
-    if ('layout' in values) {
-      await config.update('layout', values.layout, target);
-    }
-
-    if ('terminals' in values) {
-      await config.update('terminals', values.terminals, target);
-    }
-
-    if ('profiles' in values) {
-      await config.update('profiles', values.profiles, target);
-    }
-  }
-
-  private async openRepoConfig(): Promise<void> {
-    const repoConfig = this.getRepoConfigState();
-    if (!repoConfig.path) {
-      await vscode.window.showErrorMessage('Open a folder or workspace before opening an Agent Grid repo config.');
-      return;
-    }
-
-    if (!repoConfig.exists) {
-      const session = this.getSessionFromSettings();
-      const profiles = this.getProfilesFromSettings();
-      const initialConfig: RepoConfig = {
-        layout: session.layout,
-        terminals: session.terminals
-      };
-
-      if (session.tmuxCommand !== 'tmux') {
-        initialConfig.tmuxCommand = session.tmuxCommand;
-      }
-
-      if (profiles.length > 0) {
-        initialConfig.profiles = profiles;
-      }
-
-      fs.writeFileSync(repoConfig.path, `${JSON.stringify(initialConfig, null, 2)}\n`, 'utf8');
-      this.usageMetrics.record('repo_config', 'create');
-      await vscode.window.showInformationMessage(`Created ${REPO_CONFIG_FILE} in the workspace root.`);
-      await this.refreshSurface();
-    } else if (repoConfig.error) {
-      this.usageMetrics.record('repo_config', 'parse_error');
-      await vscode.window.showWarningMessage(`Open and fix ${REPO_CONFIG_FILE}: ${repoConfig.error}`);
-    }
-
-    this.usageMetrics.record('repo_config', 'open');
-    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(repoConfig.path));
-    await vscode.window.showTextDocument(document);
-  }
-
-  private async saveWorkspaceToRepoConfig(): Promise<void> {
-    const writable = this.getWritableRepoConfig();
-    if (!writable) {
-      await vscode.window.showErrorMessage(`Fix ${REPO_CONFIG_FILE} before saving Agent Grid workspace settings into it.`);
-      return;
-    }
-
-    const session = this.getSessionFromSettings();
-    const nextConfig: RepoConfig = {
-      ...writable.config,
-      layout: session.layout,
-      terminals: session.terminals
-    };
-
-    if (session.tmuxCommand !== 'tmux') {
-      nextConfig.tmuxCommand = session.tmuxCommand;
-    } else {
-      delete nextConfig.tmuxCommand;
-    }
-
-    await this.writeRepoConfig(nextConfig);
-    this.usageMetrics.record('repo_config', 'save_workspace');
-    await vscode.window.showInformationMessage(`Saved the current Agent Grid workspace into ${REPO_CONFIG_FILE}.`);
-  }
-
-  private async saveProfileToRepoConfig(): Promise<void> {
-    const writable = this.getWritableRepoConfig();
-    if (!writable) {
-      await vscode.window.showErrorMessage(`Fix ${REPO_CONFIG_FILE} before saving Agent Grid profiles into it.`);
-      return;
-    }
-
-    const session = this.getSessionFromSettings();
-    const profileName = await vscode.window.showInputBox({
-      prompt: 'Name for the repo-level Agent Grid profile',
-      value: this.buildDefaultProfileName(),
-      validateInput: (value) => (value.trim() ? undefined : 'Profile name is required.')
-    });
-
-    if (!profileName?.trim()) {
-      return;
-    }
-
-    const currentProfiles = writable.config.profiles ?? [];
-    const nextProfile: WorkspaceProfile = {
-      name: profileName.trim(),
-      layout: session.layout,
-      terminals: session.terminals
-    };
-    const nextProfiles = [...currentProfiles];
-    const existingIndex = nextProfiles.findIndex((profile) => profile.name === nextProfile.name);
-
-    if (existingIndex >= 0) {
-      const overwrite = await vscode.window.showWarningMessage(
-        `A repo config profile named "${nextProfile.name}" already exists.`,
-        { modal: true },
-        'Overwrite'
-      );
-
-      if (overwrite !== 'Overwrite') {
-        return;
-      }
-
-      nextProfiles[existingIndex] = nextProfile;
-    } else {
-      nextProfiles.push(nextProfile);
-    }
-
-    await this.writeRepoConfig({
-      ...writable.config,
-      profiles: nextProfiles
-    });
-    this.usageMetrics.record('repo_config', 'save_profile');
-    await vscode.window.showInformationMessage(`Saved the "${nextProfile.name}" profile into ${REPO_CONFIG_FILE}.`);
-  }
-
-  private async importRepoConfigToSettings(): Promise<void> {
-    const repoConfig = this.getRepoConfigState();
-    if (!repoConfig.exists || repoConfig.error || !repoConfig.config) {
-      await vscode.window.showErrorMessage(`Load a valid ${REPO_CONFIG_FILE} before importing it into workspace settings.`);
-      return;
-    }
-
-    await this.updateWorkspaceOverrides({
-      tmuxCommand: repoConfig.config.tmuxCommand ?? undefined,
-      layout: repoConfig.config.layout ?? undefined,
-      terminals: repoConfig.config.terminals ?? undefined,
-      profiles: repoConfig.config.profiles ?? undefined
-    });
-
-    this.usageMetrics.record('migration', 'import_repo_to_settings');
-    await this.refreshSurface();
-    await vscode.window.showInformationMessage(`Imported ${REPO_CONFIG_FILE} into Agent Grid workspace settings.`);
-  }
-
-  private async clearWorkspaceOverrides(): Promise<void> {
-    const confirmed = await vscode.window.showWarningMessage(
-      'Clear Agent Grid workspace overrides from VS Code settings and fall back to repo config or defaults?',
-      { modal: true },
-      'Clear'
-    );
-
-    if (confirmed !== 'Clear') {
-      return;
-    }
-
-    await this.updateWorkspaceOverrides({
-      tmuxCommand: undefined,
-      layout: undefined,
-      terminals: undefined,
-      profiles: undefined
-    });
-
-    this.usageMetrics.record('migration', 'clear_workspace_overrides');
-    await this.refreshSurface();
-    await vscode.window.showInformationMessage('Cleared Agent Grid workspace overrides from VS Code settings.');
-  }
-
-  private async migrateSettingsToRepoConfig(): Promise<void> {
-    const writable = this.getWritableRepoConfig();
-    if (!writable) {
-      await vscode.window.showErrorMessage(`Fix ${REPO_CONFIG_FILE} before migrating workspace settings into it.`);
-      return;
-    }
-
-    const workspaceLayer = this.getWorkspaceSettingsLayer();
-    const hasWorkspaceOverrides =
-      workspaceLayer.tmuxCommand !== undefined ||
-      workspaceLayer.layout !== undefined ||
-      workspaceLayer.terminals !== undefined ||
-      workspaceLayer.profiles !== undefined;
-
-    if (!hasWorkspaceOverrides) {
-      await vscode.window.showInformationMessage(
-        'No Agent Grid workspace overrides are configured. Use Save Workspace To Repo Config if you want to commit the current effective setup.'
-      );
-      return;
-    }
-
-    const workspaceConfig = resolveEffectiveWorkspaceConfig({
-      workspace: workspaceLayer,
-      repo: undefined,
-      user: {}
-    });
-    const nextConfig: RepoConfig = {
-      ...writable.config,
-      layout: workspaceConfig.layout,
-      terminals: workspaceConfig.terminals,
-      profiles: mergeProfiles(writable.config.profiles ?? [], workspaceConfig.profiles)
-    };
-
-    if (workspaceConfig.tmuxCommand !== 'tmux') {
-      nextConfig.tmuxCommand = workspaceConfig.tmuxCommand;
-    } else {
-      delete nextConfig.tmuxCommand;
-    }
-
-    await this.writeRepoConfig(nextConfig);
-    this.usageMetrics.record('migration', 'migrate_settings_to_repo');
-
-    const action = await vscode.window.showInformationMessage(
-      `Migrated the current Agent Grid workspace and local profiles into ${REPO_CONFIG_FILE}.`,
-      'Clear Workspace Overrides'
-    );
-
-    if (action === 'Clear Workspace Overrides') {
-      await this.clearWorkspaceOverrides();
-    }
-  }
-
-  private async openIssueTracker(): Promise<void> {
-    this.usageMetrics.record('support', 'open_issue_tracker');
-    await vscode.env.openExternal(vscode.Uri.parse('https://github.com/padjon/vscode-agent-grid/issues/new/choose'));
-  }
-
-  private async emailFeedback(): Promise<void> {
-    this.usageMetrics.record('support', 'email_feedback');
-    await vscode.env.openExternal(
-      vscode.Uri.parse(
-        'mailto:info@devsheep.de?subject=Agent%20Grid%20Feedback&body=Please%20tell%20us%20about%20issues%2C%20feature%20wishes%2C%20or%20workflow%20ideas.'
-      )
-    );
-  }
-
-  private async exportSupportBundle(): Promise<void> {
-    const mode = await vscode.window.showQuickPick(
-      [
+      hasWorkspaceFolder: Boolean(vscode.workspace.workspaceFolders?.length),
+      statusLabel:
+        environment.state === 'native-windows-unsupported'
+          ? 'WSL Required'
+          : environment.state === 'tmux-missing'
+            ? 'tmux Missing'
+            : terminalOpen
+              ? 'Workspace Running'
+              : detached
+                ? 'Workspace Detached'
+                : 'Workspace Idle',
+      statusDetail: environment.detail,
+      statusTone:
+        environment.state === 'ready'
+          ? terminalOpen || detached
+            ? 'running'
+            : 'idle'
+          : 'warning',
+      activeSetupId: activeSetup.id,
+      activeSetupLabel: activeSetup.label,
+      activeSetupDetail: activeSetup.description,
+      availableSetups: [
         {
-          label: 'Safe for Public Issue',
-          description: 'Recommended: redact absolute local paths from the exported bundle',
-          safeForPublic: true
+          id: 'default',
+          label: 'Default Setup',
+          description: this.describeDefaultSetupSource(effectiveConfig.layers)
         },
+        ...effectiveConfig.profiles.map((profile) => ({
+          id: this.buildProfileSetupId(profile.name),
+          label: profile.name,
+          description: `${profile.terminals.length} panes • ${profile.layout}`
+        }))
+      ],
+      selectedStorage: activeSetup.storage,
+      storageDetail: this.getStorageDetail(activeSetup.storage),
+      availableDestinations: [
+        { value: 'user', label: 'Personal', description: 'Save in your personal Agent Grid settings' },
         {
-          label: 'Full Detail',
-          description: 'Include absolute local paths for private debugging only',
-          safeForPublic: false
+          value: 'repo',
+          label: 'Shared In Repo',
+          description: `Save in ${REPO_CONFIG_FILE} so this repo can share the setup`,
+          disabled: !vscode.workspace.workspaceFolders?.length
         }
       ],
-      {
-        placeHolder: 'Choose the level of detail for the support bundle'
-      }
-    );
-
-    if (!mode) {
-      return;
-    }
-
-    const bundle = await this.buildSupportBundle(mode.safeForPublic);
-    const document = await vscode.workspace.openTextDocument({
-      language: 'markdown',
-      content: `${bundle}\n`
-    });
-
-    this.usageMetrics.record('support', 'export_bundle');
-    await vscode.window.showTextDocument(document, {
-      preview: false
-    });
-    await this.refreshSurface();
+      template: activeSetup.template,
+      starterTemplates: this.getStarterTemplates(),
+      canUpdateProfile: activeSetup.kind === 'profile',
+      canDeleteProfile: activeSetup.kind === 'profile',
+      canApplyLiveLayout: environment.state === 'ready' && (terminalOpen || detached),
+      hiddenPanes
+    };
   }
 
-  private async exportUsageReport(): Promise<void> {
-    this.usageMetrics.record('usage_report', 'export');
-    await this.usageMetrics.openReportEditor();
-    await this.refreshSurface();
-  }
-
-  private async resetUsageReport(): Promise<void> {
-    const confirmed = await vscode.window.showWarningMessage(
-      'Reset the local Agent Grid usage report counters stored in VS Code global state?',
-      { modal: true },
-      'Reset'
-    );
-
-    if (confirmed !== 'Reset') {
-      return;
-    }
-
-    await this.usageMetrics.reset();
-    await vscode.window.showInformationMessage('Agent Grid usage report counters were reset.');
-    await this.refreshSurface();
-  }
-
-  private async openWorkspace(reason: WorkspaceReason): Promise<void> {
-    const session = this.getSessionFromSettings();
-    const environment = await this.inspectEnvironment(session);
-
-    if (environment.state !== 'ready') {
-      if (reason === 'manual') {
-        await vscode.window.showErrorMessage(environment.detail);
-      }
-
-      await this.refreshSurface(environment);
-      return;
-    }
-
-    const existingTerminal = this.findExistingTerminal();
-    let recreate = false;
-
-    if (reason === 'manual' && existingTerminal) {
-      const action = await vscode.window.showInformationMessage(
-        'The Agent Grid terminal is already open.',
-        { modal: true },
-        'Focus',
-        'Recreate'
-      );
-
-      if (!action) {
-        return;
-      }
-
-      if (action === 'Focus') {
-        this.usageMetrics.record('workspace_action', 'focus_existing_terminal');
-        await this.revealAndPinTerminal(existingTerminal, false);
-        await this.context.workspaceState.update(SESSION_STATE_KEY, true);
-        await this.refreshSurface(environment);
-        return;
-      }
-
-      this.usageMetrics.record('workspace_action', 'recreate_from_existing_terminal');
-      recreate = true;
-      await this.disposeTerminal(existingTerminal);
-    } else if (reason === 'manual' && (await this.hasDetachedTmuxSession(session))) {
-      const action = await vscode.window.showInformationMessage(
-        'The Agent Grid workspace is still running in tmux.',
-        { modal: true },
-        'Attach',
-        'Recreate'
-      );
-
-      if (!action) {
-        return;
-      }
-
-      this.usageMetrics.record('workspace_action', action === 'Recreate' ? 'recreate_detached' : 'attach_detached');
-      recreate = action === 'Recreate';
-    } else if (reason === 'restore' && existingTerminal) {
-      this.usageMetrics.record('workspace_action', 'restore_focus_existing_terminal');
-      await this.revealAndPinTerminal(existingTerminal, true);
-      await this.context.workspaceState.update(SESSION_STATE_KEY, true);
-      await this.refreshSurface(environment);
-      return;
-    }
-
-    this.usageMetrics.record('workspace_open', reason);
-    const terminal = this.createTerminal();
-    await this.revealAndPinTerminal(terminal, reason === 'restore');
-    terminal.sendText(this.buildBootstrapCommand(session, recreate), true);
-    await this.context.workspaceState.update(SESSION_STATE_KEY, true);
-    await this.refreshSurface(environment);
-  }
-
-  private async applyPreset(selectedPresetId?: string): Promise<void> {
-    if (!vscode.workspace.workspaceFolders?.length) {
-      await vscode.window.showErrorMessage('Open a folder or workspace before applying an Agent Grid preset.');
-      return;
-    }
-
-    const preset =
-      selectedPresetId !== undefined
-        ? BUILTIN_PRESETS.find((candidate) => candidate.id === selectedPresetId)
-        : (
-            await vscode.window.showQuickPick(
-              BUILTIN_PRESETS.map((candidate) => ({
-                label: candidate.label,
-                description: candidate.description,
-                preset: candidate
-              })),
-              {
-                placeHolder: 'Choose an Agent Grid workspace preset'
-              }
-            )
-          )?.preset;
-
-    if (!preset) {
-      return;
-    }
-
-    const adaptedPreset = this.adaptPresetToWorkspace(preset, this.inspectWorkspaceProject());
-    await this.writeWorkspaceConfiguration(adaptedPreset.layout, adaptedPreset.terminals);
-    this.usageMetrics.record('preset_apply', preset.id);
-
-    const action = await vscode.window.showInformationMessage(
-      `Applied the "${adaptedPreset.label}" preset to workspace settings.`,
-      'Create Workspace'
-    );
-
-    await this.refreshSurface();
-
-    if (action === 'Create Workspace') {
-      await this.openWorkspace('manual');
-    }
-  }
-
-  private async openWalkthrough(): Promise<void> {
-    this.usageMetrics.record('walkthrough', 'open');
-    await vscode.commands.executeCommand('workbench.action.openWalkthrough', 'padjon.vscode-agent-grid#getting-started', false);
-  }
-
-  private async configureWorkspace(initialDestination?: ConfigurationDestination): Promise<void> {
-    const destination = initialDestination ?? (await this.pickConfigurationDestination());
-    if (!destination) {
-      return;
-    }
-
-    const hasWorkspace = Boolean(vscode.workspace.workspaceFolders?.length);
-    if (!hasWorkspace && destination !== 'user') {
-      await vscode.window.showErrorMessage('Open a folder or workspace before saving repo or workspace-specific Agent Grid settings.');
-      return;
-    }
-
-    const projectInfo = this.inspectWorkspaceProject();
-    const detectedAgents = await this.detectInstalledAgentCommands();
-    const currentSession = this.getSessionFromSettings();
-    const suggestedPresets = this.getSuggestedPresets(detectedAgents, projectInfo);
-    const choices: Array<
-      vscode.QuickPickItem & {
-        selectionMode: 'custom' | 'template';
-        template: ConfigurationTemplate;
-      }
-    > = [
-      {
-        label: 'Custom Setup',
-        description: 'Choose your own panes, commands, and layout',
-        template: {
-          layout: currentSession.layout,
-          terminals: currentSession.terminals
-        },
-        selectionMode: 'custom'
-      },
-      {
-        label: 'Use Current Setup',
-        description: `${currentSession.terminals.length} panes, ${currentSession.layout}`,
-        template: {
-          layout: currentSession.layout,
-          terminals: currentSession.terminals
-        },
-        selectionMode: 'template'
-      },
-      ...suggestedPresets.map((preset) => ({
-        label: preset.label,
-        description: preset.description,
-        template: {
-          layout: preset.layout,
-          terminals: preset.terminals
-        },
-        selectionMode: 'template' as const
-      }))
-    ];
-
-    const templateChoice = await vscode.window.showQuickPick(
-      choices,
-      {
-        placeHolder:
-          suggestedPresets.length > 0
-            ? 'Start with a custom setup or a suggestion that matches the CLIs detected in this workspace'
-            : 'Start with a custom setup or reuse the current Agent Grid configuration'
-      }
-    );
-
-    if (!templateChoice) {
-      return;
-    }
-
-    const template =
-      templateChoice.selectionMode === 'custom'
-        ? await this.collectCustomConfiguration(templateChoice.template)
-        : templateChoice.template;
-
-    if (!template) {
-      return;
-    }
-
-    await this.saveConfigurationTemplate(destination, template);
-  }
-
-  private async pickConfigurationDestination(): Promise<ConfigurationDestination | undefined> {
-    const picked = await vscode.window.showQuickPick(
-      [
-        {
-          label: 'This Repo',
-          description: `Save to ${REPO_CONFIG_FILE} so the repo can share the setup`,
-          destination: 'repo' as const
-        },
-        {
-          label: 'This VS Code Workspace',
-          description: 'Save only for the current workspace',
-          destination: 'workspace' as const
-        },
-        {
-          label: 'My Default For All Workspaces',
-          description: 'Save as user settings and use it as the base config everywhere',
-          destination: 'user' as const
-        }
-      ],
-      {
-        placeHolder: 'Where should Agent Grid save this setup?'
-      }
-    );
-
-    return picked?.destination;
-  }
-
-  private getSuggestedPresets(detectedAgents: Set<string>, projectInfo: WorkspaceProjectInfo): WorkspacePreset[] {
-    const generatedPresets: WorkspacePreset[] = [];
-    const presetIds = new Set<string>();
-
-    const detectedAgentsPreset = this.buildDetectedAgentsPreset(detectedAgents, projectInfo);
-    if (detectedAgentsPreset) {
-      generatedPresets.push(detectedAgentsPreset);
-    }
-
-    if (detectedAgents.has('claude') && detectedAgents.has('codex')) {
-      presetIds.add('claude-codex-tests');
-    }
-
-    if (detectedAgents.has('claude')) {
-      presetIds.add('claude-focused');
-    }
-
-    if (detectedAgents.has('codex')) {
-      presetIds.add('codex-focused');
-    }
-
-    if (detectedAgents.has('gemini')) {
-      presetIds.add('gemini');
-    }
-
-    if (detectedAgents.has('aider')) {
-      presetIds.add('aider');
-    }
-
-    if (detectedAgents.has('goose')) {
-      presetIds.add('goose');
-    }
-
-    if (projectInfo.frontendRelativePath || projectInfo.backendRelativePath || projectInfo.availableScripts.size > 0) {
-      presetIds.add('frontend-backend-tests-ops');
-    }
-
-    if (presetIds.size === 0) {
-      presetIds.add('solo-dev');
-    }
-
+  private getStarterTemplates(): SidebarStarterOption[] {
     return [
-      ...generatedPresets,
-      ...BUILTIN_PRESETS.filter((preset) => presetIds.has(preset.id)).map((preset) =>
-        this.adaptPresetToWorkspace(preset, projectInfo)
-      )
+      {
+        id: 'custom',
+        label: 'Custom',
+        description: 'Start from a plain editable grid.',
+        template: {
+          layout: 'tiled',
+          terminals: normalizeTerminalDefinitions([])
+        }
+      },
+      ...this.getSuggestedStarters(this.inspectWorkspaceProject())
     ];
+  }
+
+  private getSuggestedStarters(projectInfo: WorkspaceProjectInfo): SidebarStarterOption[] {
+    const detected = new Set<string>();
+    const candidates = ['claude', 'codex', 'gemini', 'aider', 'goose'];
+    for (const command of candidates) {
+      if (isExecutableOnPath(command)) {
+        detected.add(command);
+      }
+    }
+
+    const starters: SidebarStarterOption[] = [];
+    const multi = this.buildDetectedAgentsPreset(detected, projectInfo);
+    if (multi) {
+      starters.push(multi);
+    }
+
+    for (const command of candidates) {
+      if (!detected.has(command)) {
+        continue;
+      }
+
+      starters.push({
+        id: `${command}-starter`,
+        label: `${this.getAgentLabel(command)} Starter`,
+        description: `Start from a ${this.getAgentLabel(command)}-focused grid.`,
+        template: {
+          layout: 'main-horizontal',
+          terminals: [
+            { name: this.getAgentLabel(command), startupCommand: command, cwd: '${workspaceFolder}' },
+            { name: 'Shell', startupCommand: '', cwd: '${workspaceFolder}' },
+            {
+              name: projectInfo.preferredTestCommand ? 'Tests' : 'Shell 2',
+              startupCommand: projectInfo.preferredTestCommand ?? '',
+              cwd: '${workspaceFolder}'
+            }
+          ]
+        }
+      });
+    }
+
+    return starters;
   }
 
   private buildDetectedAgentsPreset(
     detectedAgents: Set<string>,
     projectInfo: WorkspaceProjectInfo
-  ): WorkspacePreset | undefined {
+  ): SidebarStarterOption | undefined {
     const ordered = ['claude', 'codex', 'gemini', 'aider', 'goose'].filter((command) => detectedAgents.has(command));
     if (ordered.length < 2) {
       return undefined;
@@ -1087,20 +466,20 @@ class AgentGridController implements vscode.Disposable {
       cwd: '${workspaceFolder}'
     }));
 
-    if (terminals.length < 4) {
-      terminals.push({
-        name: projectInfo.preferredTestCommand ? 'Tests' : 'Shell',
-        startupCommand: projectInfo.preferredTestCommand ?? '',
-        cwd: '${workspaceFolder}'
-      });
-    }
+    terminals.push({
+      name: projectInfo.preferredTestCommand ? 'Tests' : 'Shell',
+      startupCommand: projectInfo.preferredTestCommand ?? '',
+      cwd: '${workspaceFolder}'
+    });
 
     return {
       id: 'detected-agents',
-      label: 'Detected Agents Workspace',
-      description: `Uses the CLIs found here: ${ordered.join(', ')}`,
-      layout: terminals.length >= 4 ? 'tiled' : 'main-horizontal',
-      terminals
+      label: 'Detected Agents',
+      description: `Detected here: ${ordered.join(', ')}`,
+      template: {
+        layout: 'tiled',
+        terminals
+      }
     };
   }
 
@@ -1121,777 +500,283 @@ class AgentGridController implements vscode.Disposable {
     }
   }
 
-  private async collectCustomConfiguration(initial: ConfigurationTemplate): Promise<ConfigurationTemplate | undefined> {
-    const layout = await this.pickLayout(initial.layout);
-    if (!layout) {
-      return undefined;
-    }
+  private inspectWorkspaceProject(): WorkspaceProjectInfo {
+    const workspaceRoot = this.getWorkspaceRoot();
+    const packageJsonPath = workspaceRoot ? path.join(workspaceRoot, 'package.json') : undefined;
+    const availableScripts = new Set<string>();
 
-    const paneCount = await this.pickPaneCount(initial.terminals.length);
-    if (!paneCount) {
-      return undefined;
-    }
-
-    const terminals: TerminalDefinition[] = [];
-
-    for (let index = 0; index < paneCount; index += 1) {
-      const existing = initial.terminals[index];
-      const name = await vscode.window.showInputBox({
-        prompt: `Pane ${index + 1} name`,
-        value: existing?.name ?? `Pane ${index + 1}`,
-        ignoreFocusOut: true,
-        validateInput: (value) => (value.trim().length === 0 ? 'Pane name cannot be empty.' : undefined)
-      });
-
-      if (name === undefined) {
-        return undefined;
+    if (packageJsonPath && fs.existsSync(packageJsonPath)) {
+      try {
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as { scripts?: Record<string, unknown> };
+        if (packageJson.scripts) {
+          for (const scriptName of Object.keys(packageJson.scripts)) {
+            availableScripts.add(scriptName);
+          }
+        }
+      } catch {
+        // Ignore malformed package.json.
       }
-
-      const startupCommand = await vscode.window.showInputBox({
-        prompt: `Pane ${index + 1} startup command`,
-        value: existing?.startupCommand ?? '',
-        placeHolder: 'Leave empty for a plain shell',
-        ignoreFocusOut: true
-      });
-
-      if (startupCommand === undefined) {
-        return undefined;
-      }
-
-      const cwd = await vscode.window.showInputBox({
-        prompt: `Pane ${index + 1} working directory`,
-        value: existing?.cwd ?? '${workspaceFolder}',
-        placeHolder: '${workspaceFolder}',
-        ignoreFocusOut: true
-      });
-
-      if (cwd === undefined) {
-        return undefined;
-      }
-
-      terminals.push({
-        name: name.trim(),
-        startupCommand: startupCommand.trim(),
-        cwd: cwd.trim() || undefined
-      });
     }
 
     return {
-      layout,
-      terminals: normalizeTerminalDefinitions(terminals)
+      availableScripts,
+      preferredTestCommand: availableScripts.has('test:watch')
+        ? 'npm run test:watch'
+        : availableScripts.has('test')
+          ? 'npm test'
+          : undefined
     };
   }
 
-  private async pickLayout(initial: LayoutName): Promise<LayoutName | undefined> {
-    const layouts: Array<{ value: LayoutName; label: string; description: string }> = [
-      { value: 'tiled', label: 'Tiled', description: 'Balanced grid, good for 4-pane workspaces' },
-      { value: 'main-vertical', label: 'Main Vertical', description: 'Large left pane with smaller panes on the right' },
-      { value: 'main-horizontal', label: 'Main Horizontal', description: 'Large top pane with smaller panes below' },
-      { value: 'even-vertical', label: 'Even Vertical', description: 'Equal-width columns' },
-      { value: 'even-horizontal', label: 'Even Horizontal', description: 'Equal-height rows' }
-    ];
+  private getActiveSetupModel(
+    effectiveConfig: ReturnType<AgentGridController['getEffectiveWorkspaceConfig']>,
+    repoConfig: RepoConfigState
+  ): ActiveSetupModel {
+    const activeSetupId = this.getActiveSetupId();
+    const profileName = activeSetupId.startsWith('profile:') ? activeSetupId.slice('profile:'.length) : undefined;
+    const activeProfile = profileName ? effectiveConfig.profiles.find((profile) => profile.name === profileName) : undefined;
 
-    const picked = await vscode.window.showQuickPick(
-      layouts.map((layout) => ({
-        label: layout.label,
-        description: layout.description,
-        detail: layout.value === initial ? 'Current selection' : undefined,
-        value: layout.value
-      })),
-      {
-        placeHolder: 'Choose a tmux layout'
-      }
-    );
+    if (activeProfile) {
+      const source = this.getProfileStorage(activeProfile.name, repoConfig.config);
+      return {
+        id: this.buildProfileSetupId(activeProfile.name),
+        kind: 'profile',
+        label: `Profile: ${activeProfile.name}`,
+        description: `Editing the "${activeProfile.name}" profile. This is the active setup used when you create the workspace.`,
+        profileName: activeProfile.name,
+        template: {
+          layout: activeProfile.layout,
+          terminals: activeProfile.terminals
+        },
+        storage: source === 'repo' ? 'repo' : 'user'
+      };
+    }
 
-    return picked?.value;
+    return {
+      id: 'default',
+      kind: 'default',
+      label: 'Default Setup',
+      description: `Editing the default setup. This is the active setup used when you create the workspace. ${this.describeDefaultSetupSource(effectiveConfig.layers)}`,
+      template: {
+        layout: effectiveConfig.layout,
+        terminals: effectiveConfig.terminals
+      },
+      storage: effectiveConfig.layers.layout === 'repo' || effectiveConfig.layers.terminals === 'repo' ? 'repo' : 'user'
+    };
   }
 
-  private async pickPaneCount(initialCount: number): Promise<number | undefined> {
-    const counts = [1, 2, 3, 4, 5, 6];
-    const picked = await vscode.window.showQuickPick(
-      counts.map((count) => ({
-        label: `${count} pane${count === 1 ? '' : 's'}`,
-        description: count === initialCount ? 'Current selection' : undefined,
-        value: count
-      })),
-      {
-        placeHolder: 'How many panes should this setup have?'
-      }
-    );
-
-    return picked?.value;
+  private describeDefaultSetupSource(layers: EffectiveConfigLayers): string {
+    if (layers.layout === 'repo' && layers.terminals === 'repo') {
+      return `Currently loaded from ${REPO_CONFIG_FILE}.`;
+    }
+    if (layers.layout === 'user' && layers.terminals === 'user') {
+      return 'Currently loaded from your personal defaults.';
+    }
+    if (layers.layout === 'default' && layers.terminals === 'default') {
+      return 'Currently using the built-in defaults.';
+    }
+    return `Currently mixed: layout from ${layers.layout}, panes from ${layers.terminals}.`;
   }
 
-  private async saveConfigurationTemplate(
+  private getStorageDetail(destination: ConfigurationDestination): string {
+    if (destination === 'repo') {
+      return `Stores Agent Grid setup in ${REPO_CONFIG_FILE} so a team can use the same workspace layout in this repository.`;
+    }
+    return 'Stores the setup in your personal Agent Grid settings and uses it as the base setup across workspaces.';
+  }
+
+  private buildProfileSetupId(profileName: string): string {
+    return `profile:${profileName}`;
+  }
+
+  private getActiveSetupId(): string {
+    return this.context.workspaceState.get<string>(ACTIVE_SETUP_KEY, 'default');
+  }
+
+  private async setActiveSetupId(setupId: string): Promise<void> {
+    await this.context.workspaceState.update(ACTIVE_SETUP_KEY, setupId);
+  }
+
+  private async saveActiveSetup(
+    setupId: string,
     destination: ConfigurationDestination,
-    template: ConfigurationTemplate
+    template: ConfigurationTemplate,
+    createWorkspace: boolean
   ): Promise<void> {
+    if (setupId === 'default') {
+      await this.saveDefaultSetup(destination, template);
+    } else if (setupId.startsWith('profile:')) {
+      await this.saveProfileTemplate(setupId.slice('profile:'.length), destination, template);
+    }
+
+    await this.setActiveSetupId(setupId);
+    await this.context.workspaceState.update(ONBOARDING_KEY, true);
+    await this.refreshSurface();
+
+    if (createWorkspace && vscode.workspace.workspaceFolders?.length) {
+      await this.openWorkspace('manual');
+    }
+  }
+
+  private async saveAsNewProfile(
+    profileName: string,
+    destination: ConfigurationDestination,
+    template: ConfigurationTemplate,
+    createWorkspace: boolean
+  ): Promise<void> {
+    const trimmedName = profileName.trim();
+    if (!trimmedName) {
+      return;
+    }
+
+    await this.saveProfileTemplate(trimmedName, destination, template);
+    await this.setActiveSetupId(this.buildProfileSetupId(trimmedName));
+    await this.context.workspaceState.update(ONBOARDING_KEY, true);
+    await this.refreshSurface();
+
+    if (createWorkspace && vscode.workspace.workspaceFolders?.length) {
+      await this.openWorkspace('manual');
+    }
+  }
+
+  private async deleteProfile(profileName: string): Promise<void> {
+    const source = this.getProfileStorage(profileName, this.getRepoConfigState().config);
+
+    if (source === 'repo') {
+      const writable = this.getWritableRepoConfig();
+      if (!writable) {
+        await vscode.window.showErrorMessage(`Fix ${REPO_CONFIG_FILE} before deleting a shared profile.`);
+        return;
+      }
+
+      await this.writeRepoConfig({
+        ...writable.config,
+        profiles: (writable.config.profiles ?? []).filter((profile) => profile.name !== profileName)
+      });
+    } else {
+      await this.updateUserDefaults({
+        profiles: this.getUserConfiguredProfiles().filter((profile) => profile.name !== profileName)
+      });
+    }
+
+    await this.setActiveSetupId('default');
+    await this.refreshSurface();
+  }
+
+  private async saveDefaultSetup(destination: ConfigurationDestination, template: ConfigurationTemplate): Promise<void> {
     if (destination === 'repo') {
       const writable = this.getWritableRepoConfig();
       if (!writable) {
-        await vscode.window.showErrorMessage(`Fix ${REPO_CONFIG_FILE} before saving a repo-level setup.`);
+        await vscode.window.showErrorMessage(`Fix ${REPO_CONFIG_FILE} before saving a shared default setup.`);
         return;
       }
 
       await this.writeRepoConfig({
         ...writable.config,
         layout: template.layout,
-        terminals: template.terminals
+        terminals: normalizeTerminalDefinitions(template.terminals)
       });
-    } else if (destination === 'workspace') {
-      await this.writeWorkspaceConfiguration(template.layout, template.terminals);
-    } else {
-      await this.updateUserDefaults({
-        layout: template.layout,
-        terminals: template.terminals
-      });
-    }
-
-    await this.context.workspaceState.update(ONBOARDING_KEY, true);
-    await this.refreshSurface();
-
-    const message =
-      destination === 'repo'
-        ? `Saved Agent Grid setup to ${REPO_CONFIG_FILE}.`
-        : destination === 'workspace'
-          ? 'Saved Agent Grid setup to this workspace.'
-          : 'Saved Agent Grid setup as your global default. Repo or workspace-specific settings still override it.';
-
-    const canCreateWorkspace = Boolean(vscode.workspace.workspaceFolders?.length);
-    const action = await vscode.window.showInformationMessage(message, ...(canCreateWorkspace ? ['Create Workspace'] : []));
-    if (action === 'Create Workspace') {
-      await this.openWorkspace('manual');
-    }
-  }
-
-  private async runSetupWizard(): Promise<void> {
-    if (!vscode.workspace.workspaceFolders?.length) {
-      await vscode.window.showErrorMessage('Open a folder or workspace before running the Agent Grid setup wizard.');
       return;
     }
 
-    const detectedAgents = await this.detectInstalledAgentCommands();
-    const projectInfo = this.inspectWorkspaceProject();
-    this.usageMetrics.record('setup_wizard', 'open');
-    const recommendedPresets = this.getSuggestedPresets(detectedAgents, projectInfo);
-    const setupChoices: Array<
-      vscode.QuickPickItem & {
-        custom?: true;
-        preset?: WorkspacePreset;
-      }
-    > = [
-      {
-        label: 'Custom Setup',
-        description: 'Choose your own panes, commands, and layout',
-        custom: true
-      },
-      ...recommendedPresets.map((preset) => ({
-        label: preset.label,
-        description: preset.description,
-        preset
-      }))
-    ];
-
-    const picked = await vscode.window.showQuickPick(
-      setupChoices,
-      {
-        placeHolder:
-          detectedAgents.size > 0
-            ? `Detected agent CLIs: ${Array.from(detectedAgents).join(', ')}`
-            : projectInfo.availableScripts.size > 0
-              ? `Detected package scripts: ${Array.from(projectInfo.availableScripts).slice(0, 3).join(', ')}`
-              : 'Choose a starter layout or custom setup for Agent Grid'
-      }
-    );
-
-    if (!picked) {
-      return;
-    }
-
-    if ('custom' in picked && picked.custom) {
-      await this.configureWorkspace('workspace');
-      return;
-    }
-
-    if (!picked.preset) {
-      return;
-    }
-
-    await this.writeWorkspaceConfiguration(picked.preset.layout, picked.preset.terminals);
-    this.usageMetrics.record('setup_wizard', picked.preset.id);
-    await this.context.workspaceState.update(ONBOARDING_KEY, true);
-
-    const environment = await this.inspectEnvironment(this.getSessionFromSettings());
-    if (environment.state !== 'ready') {
-      const action = await vscode.window.showWarningMessage(
-        `Preset applied. ${environment.detail}`,
-        'Run Environment Check',
-        'Open Settings'
-      );
-
-      if (action === 'Run Environment Check') {
-        await this.runDiagnostics();
-      } else if (action === 'Open Settings') {
-        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:padjon.vscode-agent-grid agentGrid');
-      }
-
-      await this.refreshSurface(environment);
-      return;
-    }
-
-    const action = await vscode.window.showInformationMessage(
-      `Applied "${picked.preset.label}".`,
-      'Create Workspace',
-      'Save As Profile'
-    );
-
-    if (action === 'Create Workspace') {
-      await this.openWorkspace('manual');
-      return;
-    }
-
-    if (action === 'Save As Profile') {
-      await this.saveCurrentWorkspaceAsProfile();
-    }
-  }
-
-  private async applyProfile(selectedProfileName?: string): Promise<void> {
-    const profiles = this.getProfilesFromSettings();
-    if (profiles.length === 0) {
-      await vscode.window.showInformationMessage(
-        `No saved Agent Grid profiles are configured. Add entries to ${REPO_CONFIG_FILE} or agentGrid.profiles first.`
-      );
-      return;
-    }
-
-    const profile =
-      selectedProfileName !== undefined
-        ? profiles.find((candidate) => candidate.name === selectedProfileName)
-        : (
-            await vscode.window.showQuickPick(
-              profiles.map((candidate) => ({
-                label: candidate.name,
-                description: `${candidate.terminals.length} panes, ${candidate.layout}`,
-                profile: candidate
-              })),
-              {
-                placeHolder: 'Choose a saved Agent Grid profile'
-              }
-            )
-          )?.profile;
-
-    if (!profile) {
-      return;
-    }
-
-    await this.writeWorkspaceConfiguration(profile.layout, profile.terminals);
-    this.usageMetrics.record('profile_apply');
-    const action = await vscode.window.showInformationMessage(
-      `Applied the "${profile.name}" profile to workspace settings.`,
-      'Create Workspace'
-    );
-
-    await this.refreshSurface();
-
-    if (action === 'Create Workspace') {
-      await this.openWorkspace('manual');
-    }
-  }
-
-  private async focusRelativePane(offset: 1 | -1): Promise<void> {
-    const success = await this.runPaneMutation(async (session) => {
-      const panes = await this.listPanes(session);
-      if (panes.length === 0) {
-        throw new Error('No tmux panes were found for the current Agent Grid session.');
-      }
-
-      const activeIndex = panes.findIndex((pane) => pane.active);
-      const current = activeIndex >= 0 ? activeIndex : 0;
-      const next = (current + offset + panes.length) % panes.length;
-      const targetPane = panes[next];
-
-      await this.execTmux(session, ['select-pane', '-t', `${session.sessionName}:${session.windowName}.${targetPane.index}`]);
-    });
-
-    if (success) {
-      this.usageMetrics.record('pane_action', offset === 1 ? 'focus_next' : 'focus_previous');
-    }
-  }
-
-  private async restartActivePane(): Promise<void> {
-    const success = await this.runPaneMutation(async (session) => {
-      const panes = await this.listPanes(session);
-      const activePane = panes.find((pane) => pane.active) ?? panes[0];
-      if (!activePane) {
-        throw new Error('No tmux panes were found for the current Agent Grid session.');
-      }
-
-      const definition = session.terminals[activePane.index];
-      const target = `${session.sessionName}:${session.windowName}.${activePane.index}`;
-      const cwd = this.resolveCwd(definition?.cwd) ?? this.getWorkspaceRoot() ?? process.cwd();
-      const startupCommand = this.expandVariables(definition?.startupCommand ?? '').trim();
-      const args = ['respawn-pane', '-k', '-t', target, '-c', cwd];
-
-      if (startupCommand) {
-        args.push(startupCommand);
-      }
-
-      await this.execTmux(session, args);
-    });
-
-    if (success) {
-      this.usageMetrics.record('pane_action', 'restart_active');
-    }
-  }
-
-  private async broadcastCommand(): Promise<void> {
-    const command = await vscode.window.showInputBox({
-      prompt: 'Command to send to every Agent Grid pane',
-      placeHolder: 'npm test'
-    });
-
-    if (!command?.trim()) {
-      return;
-    }
-
-    const success = await this.runPaneMutation(async (session) => {
-      const panes = await this.listPanes(session);
-      for (const pane of panes) {
-        await this.execTmux(session, [
-          'send-keys',
-          '-t',
-          `${session.sessionName}:${session.windowName}.${pane.index}`,
-          command.trim(),
-          'C-m'
-        ]);
-      }
-    });
-
-    if (success) {
-      this.usageMetrics.record('pane_action', 'broadcast');
-    }
-  }
-
-  private async runDiagnostics(): Promise<void> {
-    const session = this.getSessionFromSettings();
-    const repoConfig = this.getRepoConfigState();
-    const effectiveConfig = this.getEffectiveWorkspaceConfig(repoConfig.config);
-    const usageMetrics = this.usageMetrics.getSnapshot();
-    const environment = await this.inspectEnvironment(session);
-    const detached = environment.state === 'ready' ? await this.hasDetachedTmuxSession(session) : false;
-    const terminalOpen = Boolean(this.findExistingTerminal());
-    const livePanes = environment.state === 'ready' && (terminalOpen || detached) ? await this.listLivePanes(session) : [];
-    const tmuxCommand = expandHomeDirectory(this.expandVariables(session.tmuxCommand).trim());
-    let tmuxVersion = 'unavailable';
-
-    if (environment.state === 'ready') {
-      try {
-        tmuxVersion = await this.execTmux(session, ['-V']);
-      } catch (error) {
-        tmuxVersion = `error: ${asErrorMessage(error)}`;
-      }
-    }
-
-    const lines = [
-      `Timestamp: ${new Date().toISOString()}`,
-      `Workspace root: ${this.getWorkspaceRoot() ?? '(none)'}`,
-      `Repo config path: ${repoConfig.path ?? '(none)'}`,
-      `Repo config state: ${repoConfig.error ? `error: ${repoConfig.error}` : repoConfig.exists ? 'loaded' : 'missing'}`,
-      `Effective config source: ${describeEffectiveConfigLayers(effectiveConfig.layers)}`,
-      `Usage metrics setting: ${usageMetrics.enabledInSettings ? 'enabled' : 'disabled'}`,
-      `VS Code telemetry enabled: ${usageMetrics.vscodeTelemetryEnabled ? 'yes' : 'no'}`,
-      `Usage metrics active: ${usageMetrics.active ? 'yes' : 'no'}`,
-      `Usage metric events stored: ${usageMetrics.totalEvents}`,
-      `Remote name: ${vscode.env.remoteName ?? '(local)'}`,
-      `Platform: ${process.platform}`,
-      `tmux command: ${tmuxCommand || '(empty)'}`,
-      `tmux version: ${tmuxVersion}`,
-      `Environment state: ${environment.state}`,
-      `Environment detail: ${environment.detail}`,
-      `Configured layout: ${session.layout}`,
-      `Configured panes: ${session.terminals.length}`,
-      `Terminal open: ${terminalOpen ? 'yes' : 'no'}`,
-      `Detached tmux session: ${detached ? 'yes' : 'no'}`,
-      `Live pane states available: ${livePanes.length}`
-    ];
-
-    this.outputChannel.clear();
-    this.outputChannel.appendLine('Agent Grid Environment Check');
-    this.outputChannel.appendLine('');
-
-    for (const line of lines) {
-      this.outputChannel.appendLine(line);
-    }
-
-    if (environment.state === 'tmux-missing') {
-      this.outputChannel.appendLine('');
-      this.outputChannel.appendLine('Recommended next step: install tmux or set agentGrid.tmuxCommand correctly.');
-    } else if (environment.state === 'native-windows-unsupported') {
-      this.outputChannel.appendLine('');
-      this.outputChannel.appendLine('Recommended next step: reopen the repository in WSL and install tmux there.');
-    } else if (!terminalOpen && !detached) {
-      this.outputChannel.appendLine('');
-      this.outputChannel.appendLine('Recommended next step: run Agent Grid: Create or Recreate Workspace.');
-    } else if (livePanes.length > 0) {
-      this.outputChannel.appendLine('');
-      this.outputChannel.appendLine('Live panes:');
-      for (const pane of livePanes) {
-        this.outputChannel.appendLine(
-          `- [${pane.active ? 'active' : 'idle'}] ${pane.title || `Pane ${pane.index + 1}`} :: ${pane.currentCommand} :: ${pane.currentPath ?? '(unknown cwd)'}`
-        );
-      }
-    }
-
-    this.outputChannel.show(true);
-    this.usageMetrics.record('diagnostics', 'run');
-    await this.refreshSurface(environment);
-    await vscode.window.showInformationMessage('Agent Grid environment check written to the "Agent Grid" output channel.');
-  }
-
-  private async buildSupportBundle(safeForPublic: boolean): Promise<string> {
-    const session = this.getSessionFromSettings();
-    const repoConfig = this.getRepoConfigState();
-    const effectiveConfig = this.getEffectiveWorkspaceConfig(repoConfig.config);
-    const usageMetrics = this.usageMetrics.getSnapshot();
-    const environment = await this.inspectEnvironment(session);
-    const detached = environment.state === 'ready' ? await this.hasDetachedTmuxSession(session) : false;
-    const terminalOpen = Boolean(this.findExistingTerminal());
-    const livePanes = environment.state === 'ready' && (terminalOpen || detached) ? await this.listLivePanes(session) : [];
-    const panes: SupportBundlePane[] = session.terminals.map((terminal) => ({
-      name: terminal.name,
-      cwd: terminal.cwd?.trim() || '${workspaceFolder}',
-      startupCommand: terminal.startupCommand
-    }));
-
-    return buildSupportBundleMarkdown({
-      generatedAt: new Date().toISOString(),
-      extensionVersion: String(this.context.extension.packageJSON.version ?? 'unknown'),
-      vscodeVersion: vscode.version,
-      runtime: vscode.env.remoteName ?? process.platform,
-      platform: process.platform,
-      workspaceRoot: this.getWorkspaceRoot(),
-      repoConfigPath: repoConfig.path,
-      repoConfigState: repoConfig.error ? `error: ${repoConfig.error}` : repoConfig.exists ? 'loaded' : 'missing',
-      environmentState: environment.state,
-      environmentDetail: environment.detail,
-      terminalOpen,
-      detachedTmuxSession: detached,
-      effectiveTmuxCommand: session.tmuxCommand,
-      effectiveLayout: session.layout,
-      effectivePanes: panes,
-      effectiveConfigSource: describeEffectiveConfigLayers(effectiveConfig.layers),
-      livePanes,
-      usageMetrics: {
-        enabledInSettings: usageMetrics.enabledInSettings,
-        vscodeTelemetryEnabled: usageMetrics.vscodeTelemetryEnabled,
-        active: usageMetrics.active,
-        storedEvents: usageMetrics.totalEvents
-      },
-      repoConfig: repoConfig.config ?? {},
-      usageReport: this.usageMetrics.buildExportData() as UsageMetricsReport,
-      safeForPublic
+    await this.updateUserDefaults({
+      layout: template.layout,
+      terminals: normalizeTerminalDefinitions(template.terminals)
     });
   }
 
-  private async saveCurrentWorkspaceAsProfile(): Promise<void> {
-    if (!vscode.workspace.workspaceFolders?.length) {
-      await vscode.window.showErrorMessage('Open a folder or workspace before saving an Agent Grid profile.');
-      return;
-    }
+  private async saveProfileTemplate(
+    profileName: string,
+    destination: ConfigurationDestination,
+    template: ConfigurationTemplate
+  ): Promise<void> {
+    const profile: WorkspaceProfile = {
+      name: profileName,
+      layout: template.layout,
+      terminals: normalizeTerminalDefinitions(template.terminals)
+    };
 
-    const session = this.getSessionFromSettings();
-    const profileName = await vscode.window.showInputBox({
-      prompt: 'Name for the saved Agent Grid profile',
-      value: this.buildDefaultProfileName(),
-      validateInput: (value) => (value.trim() ? undefined : 'Profile name is required.')
-    });
-
-    if (!profileName?.trim()) {
-      return;
-    }
-
-    const profiles = this.getConfiguredProfilesFromSettings();
-    const existingIndex = profiles.findIndex((profile) => profile.name === profileName.trim());
-
-    if (existingIndex >= 0) {
-      const overwrite = await vscode.window.showWarningMessage(
-        `A profile named "${profileName.trim()}" already exists.`,
-        { modal: true },
-        'Overwrite'
-      );
-
-      if (overwrite !== 'Overwrite') {
+    if (destination === 'repo') {
+      const writable = this.getWritableRepoConfig();
+      if (!writable) {
+        await vscode.window.showErrorMessage(`Fix ${REPO_CONFIG_FILE} before saving a shared profile.`);
         return;
       }
+
+      await this.writeRepoConfig({
+        ...writable.config,
+        profiles: mergeProfiles(writable.config.profiles ?? [], [profile])
+      });
+      return;
     }
 
-    const nextProfile: WorkspaceProfile = {
-      name: profileName.trim(),
-      layout: session.layout,
-      terminals: session.terminals
-    };
-    const nextProfiles = existingIndex >= 0 ? [...profiles] : [...profiles, nextProfile];
-
-    if (existingIndex >= 0) {
-      nextProfiles[existingIndex] = nextProfile;
-    }
-
-    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
-    await config.update('profiles', nextProfiles, vscode.ConfigurationTarget.Workspace);
-
-    this.usageMetrics.record('profile_save');
-    await vscode.window.showInformationMessage(`Saved the "${nextProfile.name}" Agent Grid profile to workspace settings.`);
+    await this.updateUserDefaults({
+      profiles: mergeProfiles(this.getUserConfiguredProfiles(), [profile])
+    });
   }
 
-  private async runPaneMutation(action: (session: WorkspaceSession) => Promise<void>): Promise<boolean> {
+  private async configureWorkspace(): Promise<void> {
+    await vscode.commands.executeCommand('workbench.view.extension.agentGrid');
+  }
+
+  private async openWorkspace(reason: WorkspaceReason): Promise<void> {
     const session = this.getSessionFromSettings();
     const environment = await this.inspectEnvironment(session);
 
     if (environment.state !== 'ready') {
-      await vscode.window.showErrorMessage(environment.detail);
+      if (reason === 'manual') {
+        await vscode.window.showErrorMessage(environment.detail);
+      }
       await this.refreshSurface(environment);
-      return false;
+      return;
     }
 
-    if (!(await this.hasDetachedTmuxSession(session)) && !this.findExistingTerminal()) {
-      await vscode.window.showInformationMessage('Create the Agent Grid workspace before using pane actions.');
-      return false;
-    }
-
-    try {
-      await action(session);
-      await this.refreshSurface(environment);
-      return true;
-    } catch (error) {
-      await vscode.window.showErrorMessage(asErrorMessage(error));
-      return false;
-    }
-  }
-
-  private async showActions(): Promise<void> {
-    const session = this.getSessionFromSettings();
-    const environment = await this.inspectEnvironment(session);
     const existingTerminal = this.findExistingTerminal();
-    const items: Array<{ label: string; description: string; run: () => Promise<void> }> = [];
+    let recreate = false;
 
-    if (existingTerminal) {
-      items.push({
-        label: 'Focus Workspace',
-        description: 'Reveal the pinned agent-grid terminal',
-        run: async () => {
-          await this.revealAndPinTerminal(existingTerminal, false);
-          await this.refreshSurface(environment);
-        }
-      });
-    }
+    if (reason === 'manual' && existingTerminal) {
+      const action = await vscode.window.showInformationMessage(
+        'The Agent Grid terminal is already open.',
+        { modal: true },
+        'Focus',
+        'Recreate'
+      );
 
-    items.push(
-      {
-        label: 'Configure Workspace',
-        description: 'Choose custom panes, commands, layout, and where to save the setup',
-        run: async () => {
-          await this.configureWorkspace();
-        }
-      },
-      {
-        label: 'Create or Recreate Workspace',
-        description: 'Start the tmux-backed workspace or reattach to it',
-        run: async () => {
-          await this.openWorkspace('manual');
-        }
-      },
-      {
-        label: 'Apply Workspace Preset',
-        description: 'Use one of the built-in starter layouts directly',
-        run: async () => {
-          await this.applyPreset();
-        }
-      },
-      {
-        label: 'Run Setup Wizard',
-        description: 'Detect common agent CLIs and apply a recommended starter layout',
-        run: async () => {
-          await this.runSetupWizard();
-        }
-      },
-      {
-        label: 'Open Getting Started Guide',
-        description: 'Open the built-in walkthrough for first-time setup',
-        run: async () => {
-          await this.openWalkthrough();
-        }
-      },
-      {
-        label: 'Open Repo Config',
-        description: `Create or edit ${REPO_CONFIG_FILE} in the workspace root`,
-        run: async () => {
-          await this.openRepoConfig();
-        }
-      },
-      {
-        label: 'Save Workspace To Repo Config',
-        description: `Write the current layout and panes into ${REPO_CONFIG_FILE}`,
-        run: async () => {
-          await this.saveWorkspaceToRepoConfig();
-        }
-      },
-      {
-        label: 'Save Profile To Repo Config',
-        description: `Append or update a named profile in ${REPO_CONFIG_FILE}`,
-        run: async () => {
-          await this.saveProfileToRepoConfig();
-        }
-      },
-      {
-        label: 'Import Repo Config To Settings',
-        description: `Copy ${REPO_CONFIG_FILE} into workspace overrides`,
-        run: async () => {
-          await this.importRepoConfigToSettings();
-        }
-      },
-      {
-        label: 'Migrate Settings To Repo Config',
-        description: `Move current workspace settings into ${REPO_CONFIG_FILE}`,
-        run: async () => {
-          await this.migrateSettingsToRepoConfig();
-        }
-      },
-      {
-        label: 'Clear Workspace Overrides',
-        description: 'Remove local Agent Grid overrides and fall back to repo config or defaults',
-        run: async () => {
-          await this.clearWorkspaceOverrides();
-        }
-      },
-      {
-        label: 'Export Support Bundle',
-        description: 'Open a markdown bundle with diagnostics and effective config',
-        run: async () => {
-          await this.exportSupportBundle();
-        }
-      },
-      {
-        label: 'Open Issue Tracker',
-        description: 'Open the Agent Grid issue templates on GitHub',
-        run: async () => {
-          await this.openIssueTracker();
-        }
-      },
-      {
-        label: 'Email Feedback',
-        description: 'Send issues, wishes, or workflow ideas to info@devsheep.de',
-        run: async () => {
-          await this.emailFeedback();
-        }
-      },
-      {
-        label: 'Export Usage Report',
-        description: 'Open a JSON report with local aggregate usage counts',
-        run: async () => {
-          await this.exportUsageReport();
-        }
-      },
-      {
-        label: 'Reset Usage Report',
-        description: 'Clear the local usage counters stored in VS Code global state',
-        run: async () => {
-          await this.resetUsageReport();
-        }
-      },
-      {
-        label: 'Apply Saved Profile',
-        description: `Use a repo-defined profile from ${REPO_CONFIG_FILE} or agentGrid.profiles`,
-        run: async () => {
-          await this.applyProfile();
-        }
-      },
-      {
-        label: 'Focus Next Pane',
-        description: 'Select the next tmux pane in the current workspace',
-        run: async () => {
-          await this.focusRelativePane(1);
-        }
-      },
-      {
-        label: 'Focus Previous Pane',
-        description: 'Select the previous tmux pane in the current workspace',
-        run: async () => {
-          await this.focusRelativePane(-1);
-        }
-      },
-      {
-        label: 'Restart Active Pane',
-        description: 'Respawn the current pane and rerun its startup command',
-        run: async () => {
-          await this.restartActivePane();
-        }
-      },
-      {
-        label: 'Broadcast Command To All Panes',
-        description: 'Send one command to every pane in the workspace',
-        run: async () => {
-          await this.broadcastCommand();
-        }
-      },
-      {
-        label: 'Save Current Workspace As Profile',
-        description: 'Store the current layout and pane config in agentGrid.profiles',
-        run: async () => {
-          await this.saveCurrentWorkspaceAsProfile();
-        }
-      },
-      {
-        label: 'Run Environment Check',
-        description: 'Write diagnostics and setup hints to the Agent Grid output channel',
-        run: async () => {
-          await this.runDiagnostics();
-        }
-      },
-      {
-        label: 'Open Agent Grid Settings',
-        description: 'Review layout, panes, and tmux command settings',
-        run: async () => {
-          await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:padjon.vscode-agent-grid agentGrid');
-        }
+      if (!action) {
+        return;
       }
-    );
 
-    if (environment.state !== 'ready') {
-      items.unshift({
-        label: 'Environment Guidance',
-        description: environment.detail,
-        run: async () => {
-          await vscode.window.showInformationMessage(environment.detail);
-        }
-      });
-    }
-
-    const picked = await vscode.window.showQuickPick(
-      items.map((item) => ({
-        label: item.label,
-        description: item.description,
-        run: item.run
-      })),
-      {
-        placeHolder: 'Choose an advanced Agent Grid action'
+      if (action === 'Focus') {
+        await this.revealAndPinTerminal(existingTerminal);
+        await this.context.workspaceState.update(SESSION_STATE_KEY, true);
+        await this.refreshSurface(environment);
+        return;
       }
-    );
 
-    if (picked) {
-      await picked.run();
+      recreate = true;
+      await this.disposeTerminal(existingTerminal);
+    } else if (reason === 'manual' && (await this.hasDetachedTmuxSession(session))) {
+      const action = await vscode.window.showInformationMessage(
+        'The Agent Grid workspace is still running in tmux.',
+        { modal: true },
+        'Attach',
+        'Recreate'
+      );
+
+      if (!action) {
+        return;
+      }
+
+      recreate = action === 'Recreate';
     }
-  }
 
-  private async writeWorkspaceConfiguration(layout: LayoutName, terminals: TerminalDefinition[]): Promise<void> {
-    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
-    await config.update('layout', layout, vscode.ConfigurationTarget.Workspace);
-    await config.update('terminals', terminals, vscode.ConfigurationTarget.Workspace);
-    await this.context.workspaceState.update(ONBOARDING_KEY, true);
-  }
-
-  private buildDefaultProfileName(): string {
-    const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
-    return workspaceName ? `${workspaceName} workspace` : 'Agent Grid workspace';
+    const previousTerminal = vscode.window.activeTerminal;
+    const previousEditor = captureEditorState(vscode.window.activeTextEditor);
+    const terminal = this.createTerminal();
+    await this.revealAndPinTerminal(terminal, previousEditor, previousTerminal);
+    terminal.sendText(this.buildBootstrapCommand(session, recreate), true);
+    await this.context.workspaceState.update(SESSION_STATE_KEY, true);
+    await this.refreshSurface(environment);
   }
 
   private createTerminal(): vscode.Terminal {
@@ -1900,11 +785,66 @@ class AgentGridController implements vscode.Disposable {
       cwd: this.getWorkspaceRoot(),
       location: {
         viewColumn: vscode.ViewColumn.Active,
-        preserveFocus: false
+        preserveFocus: true
       },
       isTransient: false,
       iconPath: new vscode.ThemeIcon('terminal')
     });
+  }
+
+  private async revealAndPinTerminal(
+    terminal: vscode.Terminal,
+    previousEditor?: { document: vscode.TextDocument; viewColumn: vscode.ViewColumn | undefined; selection: vscode.Selection },
+    previousTerminal?: vscode.Terminal
+  ): Promise<void> {
+    terminal.show(false);
+    await this.waitForActiveTerminal(terminal);
+    await this.pinActiveEditor();
+
+    if (previousEditor) {
+      await vscode.window.showTextDocument(previousEditor.document, {
+        viewColumn: previousEditor.viewColumn,
+        preserveFocus: false,
+        selection: previousEditor.selection
+      });
+    }
+
+    await this.restoreTerminalCreationContext(previousEditor, previousTerminal, terminal);
+  }
+
+  private async restoreTerminalCreationContext(
+    previousEditor:
+      | { document: vscode.TextDocument; viewColumn: vscode.ViewColumn | undefined; selection: vscode.Selection }
+      | undefined,
+    previousTerminal: vscode.Terminal | undefined,
+    createdTerminal: vscode.Terminal
+  ): Promise<void> {
+    if (previousTerminal && previousTerminal !== createdTerminal) {
+      previousTerminal.show(true);
+      return;
+    }
+
+    const preferredLocation = vscode.workspace
+      .getConfiguration('terminal.integrated')
+      .get<string>('defaultLocation', 'panel');
+
+    if (preferredLocation === 'editor') {
+      return;
+    }
+
+    try {
+      await vscode.commands.executeCommand('workbench.action.terminal.focus');
+    } catch {
+      return;
+    }
+
+    if (previousEditor) {
+      await vscode.window.showTextDocument(previousEditor.document, {
+        viewColumn: previousEditor.viewColumn,
+        preserveFocus: false,
+        selection: previousEditor.selection
+      });
+    }
   }
 
   private findExistingTerminal(): vscode.Terminal | undefined {
@@ -1914,11 +854,10 @@ class AgentGridController implements vscode.Disposable {
   private async disposeTerminal(terminal: vscode.Terminal): Promise<void> {
     await new Promise<void>((resolve) => {
       let settled = false;
-      const complete = () => {
+      const done = () => {
         if (settled) {
           return;
         }
-
         settled = true;
         closeListener.dispose();
         resolve();
@@ -1926,13 +865,51 @@ class AgentGridController implements vscode.Disposable {
 
       const closeListener = vscode.window.onDidCloseTerminal((closedTerminal) => {
         if (closedTerminal === terminal) {
-          complete();
+          done();
         }
       });
 
       terminal.dispose();
-      setTimeout(complete, 1000);
+      setTimeout(done, 1000);
     });
+  }
+
+  private async waitForActiveTerminal(terminal: vscode.Terminal, timeoutMs = 1000): Promise<void> {
+    if (vscode.window.activeTerminal === terminal) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        changeListener.dispose();
+        timeout.dispose();
+        resolve();
+      };
+
+      const changeListener = vscode.window.onDidChangeActiveTerminal((activeTerminal) => {
+        if (activeTerminal === terminal) {
+          finish();
+        }
+      });
+
+      const timeout = setDisposableTimeout(finish, timeoutMs);
+    });
+  }
+
+  private async pinActiveEditor(): Promise<void> {
+    for (const command of PIN_EDITOR_COMMANDS) {
+      try {
+        await vscode.commands.executeCommand(command);
+        return;
+      } catch {
+        // Try the next command for compatibility.
+      }
+    }
   }
 
   private async hasDetachedTmuxSession(session: WorkspaceSession): Promise<boolean> {
@@ -1982,35 +959,17 @@ class AgentGridController implements vscode.Disposable {
       };
     }
 
+    if (vscode.env.remoteName === 'wsl') {
+      return {
+        state: 'tmux-missing',
+        detail: 'tmux was not found in this WSL environment. Install it there, then recreate the workspace.'
+      };
+    }
+
     return {
       state: 'tmux-missing',
-      detail: this.buildTmuxInstallHint()
+      detail: 'tmux was not found. Install it or configure agentGrid.tmuxCommand before creating the workspace.'
     };
-  }
-
-  private async detectInstalledAgentCommands(): Promise<Set<string>> {
-    const detected = new Set<string>();
-    const candidates = ['claude', 'codex', 'gemini', 'aider', 'goose'];
-
-    for (const command of candidates) {
-      if (await this.commandExists(command)) {
-        detected.add(command);
-      }
-    }
-
-    return detected;
-  }
-
-  private async commandExists(command: string): Promise<boolean> {
-    if (process.platform === 'win32' && vscode.env.remoteName !== 'wsl') {
-      return false;
-    }
-
-    return new Promise<boolean>((resolve) => {
-      execFile('bash', ['-lc', `command -v ${command}`], (error) => {
-        resolve(!error);
-      });
-    });
   }
 
   private async execTmux(session: WorkspaceSession, args: string[]): Promise<string> {
@@ -2022,19 +981,18 @@ class AgentGridController implements vscode.Disposable {
           reject(new Error(stderr.trim() || error.message));
           return;
         }
-
         resolve(stdout.trim());
       });
     });
   }
 
-  private async listPanes(session: WorkspaceSession): Promise<PaneInfo[]> {
+  private async listPanes(session: WorkspaceSession): Promise<Array<{ index: number; active: boolean }>> {
     const output = await this.execTmux(session, [
       'list-panes',
       '-t',
       `${session.sessionName}:${session.windowName}`,
       '-F',
-      '#{pane_index} #{pane_active}'
+      '#{pane_index}\t#{pane_active}'
     ]);
 
     return output
@@ -2042,7 +1000,7 @@ class AgentGridController implements vscode.Disposable {
       .map((line) => line.trim())
       .filter(Boolean)
       .map((line) => {
-        const [indexText, activeText] = line.split(/\s+/, 2);
+        const [indexText = '', activeText = '0'] = line.split('\t');
         return {
           index: Number(indexText),
           active: activeText === '1'
@@ -2051,7 +1009,7 @@ class AgentGridController implements vscode.Disposable {
       .filter((pane) => Number.isInteger(pane.index));
   }
 
-  private async listLivePanes(session: WorkspaceSession): Promise<LivePaneInfo[]> {
+  private async listLivePanes(session: WorkspaceSession): Promise<SupportBundleLivePane[]> {
     try {
       const output = await this.execTmux(session, [
         'list-panes',
@@ -2081,304 +1039,251 @@ class AgentGridController implements vscode.Disposable {
     }
   }
 
-  private buildTmuxInstallHint(): string {
-    if (vscode.env.remoteName === 'wsl') {
-      return 'tmux was not found in this WSL environment. Install it there, for example with `sudo apt install tmux`, then recreate the workspace.';
-    }
+  private async listHiddenPanes(session: WorkspaceSession): Promise<HiddenPaneInfo[]> {
+    try {
+      const windows = await this.execTmux(session, ['list-windows', '-t', session.sessionName, '-F', '#{window_name}']);
+      const hiddenWindows = windows
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith(`${HIDDEN_WINDOW_PREFIX}-`));
 
-    if (process.platform === 'darwin') {
-      return 'tmux was not found. Install it first, for example with `brew install tmux`, then recreate the workspace.';
-    }
+      const hiddenPanes: HiddenPaneInfo[] = [];
+      for (const windowName of hiddenWindows) {
+        const pane = await this.execTmux(session, [
+          'list-panes',
+          '-t',
+          `${session.sessionName}:${windowName}`,
+          '-F',
+          '#{pane_title}\t#{pane_current_command}'
+        ]);
+        const [title = windowName, currentCommand = ''] = pane.split('\t');
+        hiddenPanes.push({ windowName, title, currentCommand });
+      }
 
-    if (process.platform === 'linux') {
-      return 'tmux was not found. Install it with your Linux package manager, then recreate the workspace.';
+      return hiddenPanes;
+    } catch {
+      return [];
     }
-
-    return 'tmux was not found. Configure agentGrid.tmuxCommand or install tmux before creating the workspace.';
   }
 
-  private inspectWorkspaceProject(): WorkspaceProjectInfo {
-    const workspaceRoot = this.getWorkspaceRoot();
-    const packageJsonPath = workspaceRoot ? path.join(workspaceRoot, 'package.json') : undefined;
-    const availableScripts = new Set<string>();
-
-    if (packageJsonPath && fs.existsSync(packageJsonPath)) {
-      try {
-        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as { scripts?: Record<string, unknown> };
-        if (packageJson.scripts && typeof packageJson.scripts === 'object') {
-          for (const scriptName of Object.keys(packageJson.scripts)) {
-            availableScripts.add(scriptName);
-          }
-        }
-      } catch {
-        // Ignore malformed package.json here. Diagnostics cover environment visibility separately.
-      }
-    }
-
-    return {
-      availableScripts,
-      frontendRelativePath: this.findFirstExistingRelativeDirectory([
-        'apps/frontend',
-        'frontend',
-        'packages/frontend',
-        'app/frontend'
-      ]),
-      backendRelativePath: this.findFirstExistingRelativeDirectory([
-        'apps/backend',
-        'backend',
-        'api',
-        'server',
-        'services/api'
-      ]),
-      preferredTestCommand: this.pickWorkspaceCommand(availableScripts, [
-        ['test:watch', 'npm run test:watch'],
-        ['test', 'npm test']
-      ]),
-      preferredLintCommand: this.pickWorkspaceCommand(availableScripts, [
-        ['lint:watch', 'npm run lint:watch'],
-        ['lint', 'npm run lint']
-      ])
-    };
-  }
-
-  private adaptPresetToWorkspace(preset: WorkspacePreset, projectInfo: WorkspaceProjectInfo): WorkspacePreset {
-    const terminals = preset.terminals.map((terminal) => {
-      let startupCommand = terminal.startupCommand;
-      let cwd = terminal.cwd;
-
-      if (terminal.name === 'Tests' && projectInfo.preferredTestCommand) {
-        startupCommand = projectInfo.preferredTestCommand;
-      }
-
-      if (terminal.name === 'Lint' && projectInfo.preferredLintCommand) {
-        startupCommand = projectInfo.preferredLintCommand;
-      }
-
-      if (terminal.name === 'Frontend' && projectInfo.frontendRelativePath) {
-        cwd = `${'${workspaceFolder}'}/${projectInfo.frontendRelativePath}`;
-      }
-
-      if (terminal.name === 'Backend' && projectInfo.backendRelativePath) {
-        cwd = `${'${workspaceFolder}'}/${projectInfo.backendRelativePath}`;
-      }
-
-      return {
-        ...terminal,
-        startupCommand,
-        cwd
-      };
+  private async applyLiveLayout(layout: LayoutName): Promise<void> {
+    await this.runPaneMutation(async (session) => {
+      await this.execTmux(session, ['select-layout', '-t', `${session.sessionName}:${session.windowName}`, layout]);
     });
-
-    const detail: string[] = [];
-    if (projectInfo.frontendRelativePath || projectInfo.backendRelativePath) {
-      detail.push('adjusted to repo folders');
-    }
-
-    if (projectInfo.preferredTestCommand || projectInfo.preferredLintCommand) {
-      detail.push('uses detected scripts');
-    }
-
-    return {
-      ...preset,
-      terminals,
-      description: detail.length > 0 ? `${preset.description} (${detail.join(', ')})` : preset.description
-    };
   }
 
-  private pickWorkspaceCommand(
-    availableScripts: Set<string>,
-    candidates: Array<[scriptName: string, command: string]>
-  ): string | undefined {
-    for (const [scriptName, command] of candidates) {
-      if (availableScripts.has(scriptName)) {
-        return command;
-      }
-    }
-
-    return undefined;
+  private async hideLivePane(paneIndex: number): Promise<void> {
+    await this.runPaneMutation(async (session) => {
+      const target = `${session.sessionName}:${session.windowName}.${paneIndex}`;
+      const hiddenWindowName = `${HIDDEN_WINDOW_PREFIX}-${Date.now()}`;
+      await this.execTmux(session, ['break-pane', '-d', '-t', target, '-n', hiddenWindowName]);
+      await this.execTmux(session, ['select-layout', '-t', `${session.sessionName}:${session.windowName}`, this.getSessionFromSettings().layout]);
+    });
   }
 
-  private findFirstExistingRelativeDirectory(candidates: string[]): string | undefined {
-    const workspaceRoot = this.getWorkspaceRoot();
-    if (!workspaceRoot) {
-      return undefined;
-    }
-
-    for (const relativePath of candidates) {
-      if (fs.existsSync(path.join(workspaceRoot, relativePath))) {
-        return relativePath;
-      }
-    }
-
-    return undefined;
+  private async restoreHiddenPane(windowName: string): Promise<void> {
+    await this.runPaneMutation(async (session) => {
+      await this.execTmux(session, [
+        'join-pane',
+        '-s',
+        `${session.sessionName}:${windowName}.0`,
+        '-t',
+        `${session.sessionName}:${session.windowName}`
+      ]);
+      await this.execTmux(session, ['kill-window', '-t', `${session.sessionName}:${windowName}`]);
+      await this.execTmux(session, ['select-layout', '-t', `${session.sessionName}:${session.windowName}`, this.getSessionFromSettings().layout]);
+    });
   }
 
-  private async revealAndPinTerminal(terminal: vscode.Terminal, preserveFocus: boolean): Promise<void> {
-    const previousEditor = preserveFocus ? captureEditorState(vscode.window.activeTextEditor) : undefined;
+  private async broadcastCommand(initialCommand?: string): Promise<void> {
+    const command =
+      initialCommand ??
+      (await vscode.window.showInputBox({
+        prompt: 'Command to send to every Agent Grid pane',
+        placeHolder: 'npm test'
+      }));
 
-    terminal.show(false);
-    await this.waitForActiveTerminal(terminal);
-    await this.pinActiveEditor();
-
-    if (previousEditor) {
-      await vscode.window.showTextDocument(previousEditor.document, {
-        viewColumn: previousEditor.viewColumn,
-        preserveFocus: false,
-        selection: previousEditor.selection
-      });
-    }
-  }
-
-  private async waitForActiveTerminal(terminal: vscode.Terminal, timeoutMs = 1000): Promise<void> {
-    if (vscode.window.activeTerminal === terminal) {
+    if (!command?.trim()) {
       return;
     }
 
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        changeListener.dispose();
-        timeout.dispose();
-        resolve();
-      };
-
-      const changeListener = vscode.window.onDidChangeActiveTerminal((activeTerminal) => {
-        if (activeTerminal === terminal) {
-          finish();
-        }
-      });
-
-      const timeout = setDisposableTimeout(finish, timeoutMs);
+    await this.runPaneMutation(async (session) => {
+      const panes = await this.listPanes(session);
+      for (const pane of panes) {
+        await this.execTmux(session, [
+          'send-keys',
+          '-t',
+          `${session.sessionName}:${session.windowName}.${pane.index}`,
+          command.trim(),
+          'C-m'
+        ]);
+      }
     });
   }
 
-  private async pinActiveEditor(): Promise<void> {
-    for (const command of PIN_EDITOR_COMMANDS) {
-      try {
-        await vscode.commands.executeCommand(command);
-        return;
-      } catch {
-        // Try the next command for compatibility across VS Code versions.
-      }
-    }
-  }
-
-  private async refreshStatus(existingEnvironment?: EnvironmentInfo): Promise<void> {
+  private async runPaneMutation(action: (session: WorkspaceSession) => Promise<void>): Promise<boolean> {
     const session = this.getSessionFromSettings();
-    const environment = existingEnvironment ?? (await this.inspectEnvironment(session));
+    const environment = await this.inspectEnvironment(session);
 
-    if (environment.state === 'native-windows-unsupported') {
-      this.statusBarItem.command = CONFIGURE_WORKSPACE_COMMAND;
-      this.statusBarItem.text = '$(warning) Agent Grid: WSL Required';
-      this.statusBarItem.tooltip = environment.detail;
-      this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-      return;
+    if (environment.state !== 'ready') {
+      await vscode.window.showErrorMessage(environment.detail);
+      await this.refreshSurface(environment);
+      return false;
     }
 
-    if (environment.state === 'tmux-missing') {
-      this.statusBarItem.command = CONFIGURE_WORKSPACE_COMMAND;
-      this.statusBarItem.text = '$(warning) Agent Grid: tmux Missing';
-      this.statusBarItem.tooltip = environment.detail;
-      this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-      return;
+    if (!(await this.hasDetachedTmuxSession(session)) && !this.findExistingTerminal()) {
+      await vscode.window.showInformationMessage('Create the Agent Grid workspace before using live pane actions.');
+      return false;
     }
 
-    this.statusBarItem.backgroundColor = undefined;
-
-    if (this.findExistingTerminal()) {
-      this.statusBarItem.command = CREATE_COMMAND;
-      this.statusBarItem.text = '$(terminal) Agent Grid: Running';
-      this.statusBarItem.tooltip = 'The agent-grid terminal is open.';
-      return;
+    try {
+      await action(session);
+      await this.refreshSurface(environment);
+      return true;
+    } catch (error) {
+      await vscode.window.showErrorMessage(asErrorMessage(error));
+      return false;
     }
-
-    if (await this.hasDetachedTmuxSession(session)) {
-      this.statusBarItem.command = CREATE_COMMAND;
-      this.statusBarItem.text = '$(plug) Agent Grid: Detached';
-      this.statusBarItem.tooltip = 'A matching tmux session is running without the terminal tab attached.';
-      return;
-    }
-
-    this.statusBarItem.command = CONFIGURE_WORKSPACE_COMMAND;
-    this.statusBarItem.text = '$(terminal) Agent Grid: Idle';
-    this.statusBarItem.tooltip = 'Run Configure Workspace to edit your setup, or Create Workspace to launch it.';
   }
 
-  private getEffectiveWorkspaceConfig(repoConfig: RepoConfig | undefined = this.getRepoConfigState().config) {
-    return resolveEffectiveWorkspaceConfig({
-      workspace: this.getWorkspaceSettingsLayer(),
-      repo: repoConfig,
-      user: this.getUserSettingsLayer()
+  private async runDiagnostics(): Promise<void> {
+    const session = this.getSessionFromSettings();
+    const repoConfig = this.getRepoConfigState();
+    const effectiveConfig = this.getEffectiveWorkspaceConfig(repoConfig.config);
+    const environment = await this.inspectEnvironment(session);
+    const detached = environment.state === 'ready' ? await this.hasDetachedTmuxSession(session) : false;
+    const terminalOpen = Boolean(this.findExistingTerminal());
+    const livePanes = environment.state === 'ready' && (terminalOpen || detached) ? await this.listLivePanes(session) : [];
+    const tmuxCommand = expandHomeDirectory(this.expandVariables(session.tmuxCommand).trim());
+    let tmuxVersion = 'unavailable';
+
+    if (environment.state === 'ready') {
+      try {
+        tmuxVersion = await this.execTmux(session, ['-V']);
+      } catch (error) {
+        tmuxVersion = `error: ${asErrorMessage(error)}`;
+      }
+    }
+
+    const lines = [
+      `Timestamp: ${new Date().toISOString()}`,
+      `Workspace root: ${this.getWorkspaceRoot() ?? '(none)'}`,
+      `Repo config path: ${repoConfig.path ?? '(none)'}`,
+      `Repo config state: ${repoConfig.error ? `error: ${repoConfig.error}` : repoConfig.exists ? 'loaded' : 'missing'}`,
+      `Remote name: ${vscode.env.remoteName ?? '(local)'}`,
+      `Platform: ${process.platform}`,
+      `tmux command: ${tmuxCommand || '(empty)'}`,
+      `tmux version: ${tmuxVersion}`,
+      `Environment state: ${environment.state}`,
+      `Environment detail: ${environment.detail}`,
+      `Configured layout: ${session.layout}`,
+      `Configured panes: ${session.terminals.length}`,
+      `Active setup source: ${this.describeDefaultSetupSource(effectiveConfig.layers)}`,
+      `Terminal open: ${terminalOpen ? 'yes' : 'no'}`,
+      `Detached tmux session: ${detached ? 'yes' : 'no'}`,
+      `Live pane states available: ${livePanes.length}`
+    ];
+
+    this.outputChannel.clear();
+    this.outputChannel.appendLine('Agent Grid Environment Check');
+    this.outputChannel.appendLine('');
+    for (const line of lines) {
+      this.outputChannel.appendLine(line);
+    }
+
+    if (livePanes.length > 0) {
+      this.outputChannel.appendLine('');
+      this.outputChannel.appendLine('Live panes:');
+      for (const pane of livePanes) {
+        this.outputChannel.appendLine(
+          `- [${pane.active ? 'active' : 'idle'}] ${pane.title || `Pane ${pane.index + 1}`} :: ${pane.currentCommand} :: ${pane.currentPath ?? '(unknown cwd)'}`
+        );
+      }
+    }
+
+    this.outputChannel.show(true);
+    await vscode.window.showInformationMessage('Agent Grid environment check written to the "Agent Grid" output channel.');
+  }
+
+  private async buildSupportBundle(safeForPublic: boolean): Promise<string> {
+    const session = this.getSessionFromSettings();
+    const repoConfig = this.getRepoConfigState();
+    const effectiveConfig = this.getEffectiveWorkspaceConfig(repoConfig.config);
+    const environment = await this.inspectEnvironment(session);
+    const detached = environment.state === 'ready' ? await this.hasDetachedTmuxSession(session) : false;
+    const terminalOpen = Boolean(this.findExistingTerminal());
+    const livePanes = environment.state === 'ready' && (terminalOpen || detached) ? await this.listLivePanes(session) : [];
+    const panes: SupportBundlePane[] = session.terminals.map((terminal) => ({
+      name: terminal.name,
+      cwd: terminal.cwd?.trim() || '${workspaceFolder}',
+      startupCommand: terminal.startupCommand
+    }));
+
+    return buildSupportBundleMarkdown({
+      generatedAt: new Date().toISOString(),
+      extensionVersion: String(this.context.extension.packageJSON.version ?? 'unknown'),
+      vscodeVersion: vscode.version,
+      runtime: vscode.env.remoteName ?? process.platform,
+      platform: process.platform,
+      workspaceRoot: this.getWorkspaceRoot(),
+      repoConfigPath: repoConfig.path,
+      repoConfigState: repoConfig.error ? `error: ${repoConfig.error}` : repoConfig.exists ? 'loaded' : 'missing',
+      environmentState: environment.state,
+      environmentDetail: environment.detail,
+      terminalOpen,
+      detachedTmuxSession: detached,
+      effectiveTmuxCommand: session.tmuxCommand,
+      effectiveLayout: session.layout,
+      effectivePanes: panes,
+      effectiveConfigSource: this.describeDefaultSetupSource(effectiveConfig.layers),
+      activeSetup: this.getActiveSetupModel(effectiveConfig, repoConfig).label,
+      livePanes,
+      repoConfig: repoConfig.config ?? {},
+      safeForPublic
     });
   }
 
-  private getSessionFromSettings(): WorkspaceSession {
-    return this.toWorkspaceSession(this.getEffectiveWorkspaceConfig());
+  private async exportSupportBundle(): Promise<void> {
+    const mode = await vscode.window.showQuickPick(
+      [
+        { label: 'Safe for Public Issue', description: 'Recommended: redact absolute local paths', safeForPublic: true },
+        { label: 'Full Detail', description: 'Include absolute local paths for private debugging', safeForPublic: false }
+      ],
+      { placeHolder: 'Choose the level of detail for the support bundle' }
+    );
+
+    if (!mode) {
+      return;
+    }
+
+    const bundle = await this.buildSupportBundle(mode.safeForPublic);
+    const document = await vscode.workspace.openTextDocument({
+      language: 'markdown',
+      content: `${bundle}\n`
+    });
+
+    await vscode.window.showTextDocument(document, { preview: false });
   }
 
-  private toWorkspaceSession(config: ReturnType<AgentGridController['getEffectiveWorkspaceConfig']>): WorkspaceSession {
-    return {
-      tmuxCommand: config.tmuxCommand,
-      sessionName: this.buildSessionName(),
-      windowName: DEFAULT_WINDOW_NAME,
-      layout: config.layout,
-      terminals: config.terminals
-    };
+  private async openIssueTracker(): Promise<void> {
+    await vscode.env.openExternal(vscode.Uri.parse('https://github.com/padjon/vscode-agent-grid/issues/new/choose'));
   }
 
-  private getWorkspaceSettingsLayer(): SettingsLayerConfig {
-    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
-    return {
-      tmuxCommand: this.readWorkspaceOverride<string>(config.inspect<string>('tmuxCommand')),
-      layout: this.readWorkspaceOverride<string>(config.inspect<string>('layout')),
-      terminals: this.readWorkspaceOverride<unknown[]>(config.inspect<unknown[]>('terminals')),
-      profiles: this.readWorkspaceOverride<unknown[]>(config.inspect<unknown[]>('profiles'))
-    };
+  private async emailFeedback(): Promise<void> {
+    await vscode.env.openExternal(
+      vscode.Uri.parse(
+        'mailto:info@devsheep.de?subject=Agent%20Grid%20Feedback&body=Please%20tell%20us%20about%20issues%2C%20feature%20wishes%2C%20or%20workflow%20ideas.'
+      )
+    );
   }
 
-  private getUserSettingsLayer(): SettingsLayerConfig {
-    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
-    return {
-      tmuxCommand: this.readUserSetting<string>(config.inspect<string>('tmuxCommand')),
-      layout: this.readUserSetting<string>(config.inspect<string>('layout')),
-      terminals: this.readUserSetting<unknown[]>(config.inspect<unknown[]>('terminals')),
-      profiles: this.readUserSetting<unknown[]>(config.inspect<unknown[]>('profiles'))
-    };
-  }
-
-  private getProfilesFromSettings(): WorkspaceProfile[] {
-    return this.getEffectiveWorkspaceConfig().profiles;
-  }
-
-  private getConfiguredProfilesFromSettings(): WorkspaceProfile[] {
-    const configuredProfiles = this.getWorkspaceSettingsLayer().profiles;
-    return normalizeProfiles(configuredProfiles ?? []);
-  }
-
-  private readWorkspaceOverride<T>(
-    inspection: { workspaceFolderValue?: T; workspaceValue?: T; globalValue?: T } | undefined
-  ): T | undefined {
-    return inspection?.workspaceFolderValue ?? inspection?.workspaceValue;
-  }
-
-  private readUserSetting<T>(
-    inspection: { globalValue?: T } | undefined
-  ): T | undefined {
-    return inspection?.globalValue;
+  private async openWalkthrough(): Promise<void> {
+    await vscode.commands.executeCommand('workbench.action.openWalkthrough', 'padjon.vscode-agent-grid#getting-started', false);
   }
 
   private buildSessionName(): string {
     const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
-    if (workspaceName) {
-      return sanitizeTmuxName(`agent-grid-${workspaceName}`);
-    }
-
-    return 'agent-grid';
+    return workspaceName ? sanitizeTmuxName(`agent-grid-${workspaceName}`) : 'agent-grid';
   }
 
   private buildBootstrapCommand(session: WorkspaceSession, recreate: boolean): string {
@@ -2407,7 +1312,6 @@ class AgentGridController implements vscode.Disposable {
 
     let resolved = this.expandVariables(cwd);
     resolved = expandHomeDirectory(resolved);
-
     if (path.isAbsolute(resolved) || !workspaceRoot) {
       return resolved;
     }
@@ -2427,845 +1331,847 @@ class AgentGridController implements vscode.Disposable {
       if (!replacement) {
         return result;
       }
-
       return result.split(token).join(replacement);
     }, value);
   }
-}
 
-class AgentGridSidebarProvider implements vscode.TreeDataProvider<AgentGridSidebarNode> {
-  private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<AgentGridSidebarNode | undefined | void>();
-  readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
-  private snapshot: AgentGridSidebarSnapshot | undefined;
-
-  setSnapshot(snapshot: AgentGridSidebarSnapshot): void {
-    this.snapshot = snapshot;
-    this.onDidChangeTreeDataEmitter.fire();
+  private getRepoConfigPath(): string | undefined {
+    const workspaceRoot = this.getWorkspaceRoot();
+    return workspaceRoot ? path.join(workspaceRoot, REPO_CONFIG_FILE) : undefined;
   }
 
-  getTreeItem(element: AgentGridSidebarNode): vscode.TreeItem {
-    const item = new vscode.TreeItem(element.label, element.collapsibleState);
-    item.id = element.id;
-    item.description = element.description;
-    item.tooltip = element.tooltip;
-    item.iconPath = element.icon;
-    item.command = element.command;
-    return item;
-  }
-
-  getChildren(element?: AgentGridSidebarNode): vscode.ProviderResult<AgentGridSidebarNode[]> {
-    if (!this.snapshot) {
-      return [];
+  private getRepoConfigState(): RepoConfigState {
+    const repoConfigPath = this.getRepoConfigPath();
+    if (!repoConfigPath) {
+      return { exists: false };
     }
 
-    if (element) {
-      return element.children ?? [];
+    if (!fs.existsSync(repoConfigPath)) {
+      return { path: repoConfigPath, exists: false };
     }
 
-    if (this.snapshot.shouldShowWelcome) {
-      return [];
+    try {
+      return {
+        path: repoConfigPath,
+        exists: true,
+        config: parseRepoConfig(fs.readFileSync(repoConfigPath, 'utf8'))
+      };
+    } catch (error) {
+      return {
+        path: repoConfigPath,
+        exists: true,
+        error: asErrorMessage(error)
+      };
     }
-
-    return buildSidebarNodes(this.snapshot);
-  }
-}
-
-class UsageMetricsService implements vscode.Disposable {
-  private readonly extensionVersion: string;
-  private state: UsageMetricsState;
-  private writeQueue: Promise<void> = Promise.resolve();
-
-  constructor(
-    private readonly context: vscode.ExtensionContext,
-    private readonly outputChannel: vscode.OutputChannel
-  ) {
-    this.extensionVersion = String(context.extension.packageJSON.version ?? 'unknown');
-    this.state = context.globalState.get<UsageMetricsState>(USAGE_METRICS_KEY, {
-      schemaVersion: 1,
-      events: {}
-    });
   }
 
-  dispose(): void {
-    // No-op. The service uses workspace/global state only.
-  }
-
-  getSnapshot(): UsageMetricsSnapshot {
-    const events = Object.values(this.state.events);
-    const totalEvents = events.reduce((sum, event) => sum + event.count, 0);
-
+  private getWritableRepoConfig(): { path: string; config: RepoConfig } | undefined {
+    const repoConfig = this.getRepoConfigState();
+    if (!repoConfig.path) {
+      return undefined;
+    }
+    if (repoConfig.exists && repoConfig.error) {
+      return undefined;
+    }
     return {
-      enabledInSettings: this.isEnabledInSettings(),
-      vscodeTelemetryEnabled: vscode.env.isTelemetryEnabled,
-      active: this.isActive(),
-      totalEvents,
-      eventTypes: events.length,
-      updatedAt: this.state.updatedAt
+      path: repoConfig.path,
+      config: repoConfig.config ?? {}
     };
   }
 
-  record(eventName: string, bucket?: string): void {
-    if (!this.isActive()) {
+  private async writeRepoConfig(config: RepoConfig): Promise<void> {
+    const writable = this.getWritableRepoConfig();
+    if (!writable) {
+      throw new Error(`Fix ${REPO_CONFIG_FILE} before saving to repo config.`);
+    }
+
+    fs.writeFileSync(writable.path, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  }
+
+  private getWorkspaceSettingsLayer(): SettingsLayerConfig {
+    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
+    return {
+      tmuxCommand: this.readWorkspaceOverride<string>(config.inspect<string>('tmuxCommand')),
+      layout: this.readWorkspaceOverride<string>(config.inspect<string>('layout')),
+      terminals: this.readWorkspaceOverride<unknown[]>(config.inspect<unknown[]>('terminals')),
+      profiles: this.readWorkspaceOverride<unknown[]>(config.inspect<unknown[]>('profiles'))
+    };
+  }
+
+  private getUserSettingsLayer(): SettingsLayerConfig {
+    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
+    return {
+      tmuxCommand: this.readUserSetting<string>(config.inspect<string>('tmuxCommand')),
+      layout: this.readUserSetting<string>(config.inspect<string>('layout')),
+      terminals: this.readUserSetting<unknown[]>(config.inspect<unknown[]>('terminals')),
+      profiles: this.readUserSetting<unknown[]>(config.inspect<unknown[]>('profiles'))
+    };
+  }
+
+  private readWorkspaceOverride<T>(inspection: { workspaceFolderValue?: T; workspaceValue?: T } | undefined): T | undefined {
+    return inspection?.workspaceFolderValue ?? inspection?.workspaceValue;
+  }
+
+  private readUserSetting<T>(inspection: { globalValue?: T } | undefined): T | undefined {
+    return inspection?.globalValue;
+  }
+
+  private getEffectiveWorkspaceConfig(repoConfig: RepoConfig | undefined = this.getRepoConfigState().config) {
+    return resolveEffectiveWorkspaceConfig({
+      workspace: this.getWorkspaceSettingsLayer(),
+      repo: repoConfig,
+      user: this.getUserSettingsLayer()
+    });
+  }
+
+  private getSessionFromSettings(
+    effectiveConfig: ReturnType<AgentGridController['getEffectiveWorkspaceConfig']> = this.getEffectiveWorkspaceConfig()
+  ): WorkspaceSession {
+    const activeSetupId = this.getActiveSetupId();
+    const activeProfileName = activeSetupId.startsWith('profile:') ? activeSetupId.slice('profile:'.length) : undefined;
+    const activeProfile = activeProfileName ? effectiveConfig.profiles.find((profile) => profile.name === activeProfileName) : undefined;
+
+    return {
+      tmuxCommand: effectiveConfig.tmuxCommand,
+      sessionName: this.buildSessionName(),
+      windowName: DEFAULT_WINDOW_NAME,
+      layout: activeProfile?.layout ?? effectiveConfig.layout,
+      terminals: activeProfile?.terminals ?? effectiveConfig.terminals
+    };
+  }
+
+  private getUserConfiguredProfiles(): WorkspaceProfile[] {
+    return normalizeProfiles(this.getUserSettingsLayer().profiles ?? []);
+  }
+
+  private getRepoConfiguredProfiles(repoConfig: RepoConfig | undefined = this.getRepoConfigState().config): WorkspaceProfile[] {
+    return normalizeProfiles(repoConfig?.profiles ?? []);
+  }
+
+  private getProfileStorage(profileName: string, repoConfig: RepoConfig | undefined): 'repo' | 'user' {
+    if (this.getRepoConfiguredProfiles(repoConfig).some((profile) => profile.name === profileName)) {
+      return 'repo';
+    }
+    return 'user';
+  }
+
+  private async updateUserDefaults(
+    values: Partial<Record<'tmuxCommand' | 'layout' | 'terminals' | 'profiles', unknown>>
+  ): Promise<void> {
+    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
+    if ('tmuxCommand' in values) {
+      await config.update('tmuxCommand', values.tmuxCommand, vscode.ConfigurationTarget.Global);
+    }
+    if ('layout' in values) {
+      await config.update('layout', values.layout, vscode.ConfigurationTarget.Global);
+    }
+    if ('terminals' in values) {
+      await config.update('terminals', values.terminals, vscode.ConfigurationTarget.Global);
+    }
+    if ('profiles' in values) {
+      await config.update('profiles', values.profiles, vscode.ConfigurationTarget.Global);
+    }
+  }
+}
+
+class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
+  private view: vscode.WebviewView | undefined;
+  private state: SidebarState | undefined;
+
+  constructor(
+    private readonly extensionUri: vscode.Uri,
+    private readonly actions: AgentGridSidebarActions
+  ) {}
+
+  dispose(): void {
+    // No-op.
+  }
+
+  setState(state: SidebarState): void {
+    this.state = state;
+    this.postState();
+  }
+
+  resolveWebviewView(webviewView: vscode.WebviewView): void {
+    this.view = webviewView;
+    webviewView.webview.options = {
+      enableScripts: true
+    };
+    webviewView.webview.html = this.getHtml();
+    webviewView.webview.onDidReceiveMessage(async (message) => {
+      await this.handleMessage(message);
+    });
+    this.postState();
+  }
+
+  private async handleMessage(message: unknown): Promise<void> {
+    if (!isRecord(message) || typeof message.type !== 'string') {
       return;
     }
 
-    const now = new Date().toISOString();
-    const entry = this.state.events[eventName] ?? {
-      count: 0,
-      firstSeen: now,
-      lastSeen: now
-    };
-
-    entry.count += 1;
-    entry.lastSeen = now;
-
-    if (bucket) {
-      entry.buckets = entry.buckets ?? {};
-      entry.buckets[bucket] = (entry.buckets[bucket] ?? 0) + 1;
-    }
-
-    this.state.events[eventName] = entry;
-    this.state.updatedAt = now;
-    this.queuePersist();
-  }
-
-  async openReportEditor(): Promise<void> {
-    const document = await vscode.workspace.openTextDocument({
-      language: 'json',
-      content: `${JSON.stringify(this.buildExportData(), null, 2)}\n`
-    });
-
-    await vscode.window.showTextDocument(document, {
-      preview: false
-    });
-  }
-
-  async reset(): Promise<void> {
-    this.state = {
-      schemaVersion: 1,
-      events: {}
-    };
-    await this.context.globalState.update(USAGE_METRICS_KEY, this.state);
-  }
-
-  private isEnabledInSettings(): boolean {
-    return vscode.workspace.getConfiguration(EXTENSION_NAMESPACE).get<boolean>('enableUsageMetrics', false);
-  }
-
-  private isActive(): boolean {
-    return this.isEnabledInSettings() && vscode.env.isTelemetryEnabled;
-  }
-
-  buildExportData(): UsageMetricsReport {
-    return {
-      generatedAt: new Date().toISOString(),
-      extensionVersion: this.extensionVersion,
-      settings: {
-        enableUsageMetrics: this.isEnabledInSettings(),
-        vscodeTelemetryEnabled: vscode.env.isTelemetryEnabled,
-        active: this.isActive()
-      },
-      notes: [
-        'Counts are stored locally in VS Code global state.',
-        'No workspace names, file paths, commands, prompts, or pane contents are recorded.',
-        'Export is manual. Nothing is sent anywhere by this feature.'
-      ],
-      events: this.state.events
-    };
-  }
-
-  private queuePersist(): void {
-    this.writeQueue = this.writeQueue
-      .then(() => this.context.globalState.update(USAGE_METRICS_KEY, this.state))
-      .catch((error) => {
-        this.outputChannel.appendLine(`Agent Grid usage metrics persist failed: ${asErrorMessage(error)}`);
-      });
-  }
-}
-
-function buildSidebarNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
-  const status = buildStatusNode(snapshot);
-  const workspaceActions = buildWorkspaceActionNodes();
-  const currentSetupNodes = buildCurrentSetupNodes(snapshot);
-  const supportNodes = buildSupportNodes();
-  const advancedNodes = buildAdvancedNodes(snapshot);
-
-  return [
-    status,
-    buildSectionNode(
-      'workspace',
-      'Workspace',
-      'Configure, create, and re-run the main setup flow',
-      new vscode.ThemeIcon('terminal'),
-      workspaceActions
-    ),
-    buildSectionNode(
-      'current-setup',
-      'Current Setup',
-      `${snapshot.session.terminals.length} panes • ${snapshot.session.layout} • ${snapshot.configSourceLabel}`,
-      new vscode.ThemeIcon('list-unordered'),
-      currentSetupNodes
-    ),
-    buildSectionNode(
-      'support',
-      'Support',
-      'Diagnostics, support bundle, GitHub issues, and email feedback',
-      new vscode.ThemeIcon('comment-discussion'),
-      supportNodes,
-      vscode.TreeItemCollapsibleState.Collapsed
-    ),
-    buildSectionNode(
-      'advanced',
-      'Advanced',
-      'Profiles, presets, repo config, migration, live pane actions, and usage reports',
-      new vscode.ThemeIcon('tools'),
-      advancedNodes,
-      vscode.TreeItemCollapsibleState.Collapsed
-    )
-  ];
-}
-
-function buildCurrentSetupNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
-  return [
-    buildLeafNode(
-      'setup-source',
-      'Config Source',
-      snapshot.configSourceLabel,
-      `tmuxCommand=${snapshot.effectiveConfigLayers.tmuxCommand}, layout=${snapshot.effectiveConfigLayers.layout}, terminals=${snapshot.effectiveConfigLayers.terminals}, profiles=${snapshot.effectiveConfigLayers.profiles}`,
-      new vscode.ThemeIcon('layers'),
-      CONFIGURE_WORKSPACE_COMMAND
-    ),
-    buildLeafNode(
-      'setup-layout',
-      'Layout',
-      snapshot.session.layout,
-      'Run Configure Workspace to change the layout and pane list.',
-      new vscode.ThemeIcon('layout-panel'),
-      CONFIGURE_WORKSPACE_COMMAND
-    ),
-    buildLeafNode(
-      'setup-pane-count',
-      'Panes',
-      String(snapshot.session.terminals.length),
-      'Run Configure Workspace to add, remove, or change panes.',
-      new vscode.ThemeIcon('split-horizontal'),
-      CONFIGURE_WORKSPACE_COMMAND
-    ),
-    ...buildConfiguredPaneNodes(snapshot.session)
-  ];
-}
-
-function buildAdvancedNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
-  const nodes: AgentGridSidebarNode[] = [
-    buildActionNode(
-      'advanced-show-actions',
-      'Open Advanced Actions',
-      'Open the full Agent Grid action list',
-      new vscode.ThemeIcon('list-selection'),
-      SHOW_ACTIONS_COMMAND
-    ),
-    buildActionNode(
-      'advanced-open-repo-config',
-      'Open Repo Config',
-      `Create or edit ${REPO_CONFIG_FILE} in the workspace root`,
-      new vscode.ThemeIcon('file-code'),
-      OPEN_REPO_CONFIG_COMMAND
-    ),
-    buildActionNode(
-      'advanced-apply-profile',
-      'Apply Saved Profile',
-      'Reuse a saved repo or workspace profile',
-      new vscode.ThemeIcon('bookmark'),
-      APPLY_PROFILE_COMMAND
-    ),
-    buildActionNode(
-      'advanced-apply-preset',
-      'Apply Workspace Preset',
-      'Use a built-in starter layout directly',
-      new vscode.ThemeIcon('library'),
-      SETUP_PRESET_COMMAND
-    ),
-    buildActionNode(
-      'advanced-save-profile',
-      'Save Current Workspace As Profile',
-      'Store the current setup as a reusable profile',
-      new vscode.ThemeIcon('add'),
-      SAVE_PROFILE_COMMAND
-    ),
-    buildActionNode(
-      'advanced-save-repo-workspace',
-      'Save Workspace To Repo Config',
-      `Write the current layout and panes into ${REPO_CONFIG_FILE}`,
-      new vscode.ThemeIcon('save'),
-      SAVE_WORKSPACE_TO_REPO_CONFIG_COMMAND
-    ),
-    buildActionNode(
-      'advanced-save-repo-profile',
-      'Save Profile To Repo Config',
-      `Append or update a named profile in ${REPO_CONFIG_FILE}`,
-      new vscode.ThemeIcon('bookmark'),
-      SAVE_PROFILE_TO_REPO_CONFIG_COMMAND
-    ),
-    buildActionNode(
-      'advanced-import-repo',
-      'Import Repo Config To Settings',
-      `Copy ${REPO_CONFIG_FILE} into workspace overrides`,
-      new vscode.ThemeIcon('cloud-download'),
-      IMPORT_REPO_CONFIG_TO_SETTINGS_COMMAND
-    ),
-    buildActionNode(
-      'advanced-migrate-repo',
-      'Migrate Settings To Repo Config',
-      `Move current workspace settings into ${REPO_CONFIG_FILE}`,
-      new vscode.ThemeIcon('cloud-upload'),
-      MIGRATE_SETTINGS_TO_REPO_CONFIG_COMMAND
-    ),
-    buildActionNode(
-      'advanced-clear-workspace',
-      'Clear Workspace Overrides',
-      'Remove local Agent Grid overrides and fall back to repo config or defaults',
-      new vscode.ThemeIcon('clear-all'),
-      CLEAR_WORKSPACE_OVERRIDES_COMMAND
-    ),
-    buildActionNode(
-      'advanced-export-usage',
-      'Export Usage Report',
-      'Open a JSON report with local aggregate event counts',
-      new vscode.ThemeIcon('export'),
-      EXPORT_USAGE_REPORT_COMMAND
-    ),
-    buildActionNode(
-      'advanced-reset-usage',
-      'Reset Usage Report',
-      'Clear the local usage counters stored in VS Code global state',
-      new vscode.ThemeIcon('trash'),
-      RESET_USAGE_REPORT_COMMAND
-    )
-  ];
-
-  if (snapshot.terminalOpen || snapshot.detached) {
-    nodes.push(...buildPaneActionNodes(snapshot));
-  }
-
-  if (snapshot.livePanes.length > 0) {
-    nodes.push(...buildLivePaneNodes(snapshot));
-  }
-
-  return nodes;
-}
-
-function buildSessionNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
-  return [
-    buildLeafNode(
-      'session-name',
-      'Session Name',
-      snapshot.session.sessionName,
-      'tmux session name used by Agent Grid.',
-      new vscode.ThemeIcon('symbol-string')
-    ),
-    buildLeafNode(
-      'session-source',
-      'Config Source',
-      snapshot.configSourceLabel,
-      `tmuxCommand=${snapshot.effectiveConfigLayers.tmuxCommand}, layout=${snapshot.effectiveConfigLayers.layout}, terminals=${snapshot.effectiveConfigLayers.terminals}, profiles=${snapshot.effectiveConfigLayers.profiles}`,
-      new vscode.ThemeIcon('layers')
-    )
-  ];
-}
-
-function buildUsageMetricNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
-  const nodes = [
-    buildActionNode(
-      'usage-export',
-      'Export Usage Report',
-      'Open a JSON report with local aggregate event counts',
-      new vscode.ThemeIcon('export'),
-      EXPORT_USAGE_REPORT_COMMAND
-    ),
-    buildActionNode(
-      'usage-reset',
-      'Reset Usage Report',
-      'Clear the local usage counters stored in VS Code global state',
-      new vscode.ThemeIcon('trash'),
-      RESET_USAGE_REPORT_COMMAND
-    ),
-    buildActionNode(
-      'usage-settings',
-      'Open Usage Metrics Setting',
-      'Turn local usage metrics on or off',
-      new vscode.ThemeIcon('gear'),
-      'workbench.action.openSettings',
-      ['agentGrid.enableUsageMetrics']
-    )
-  ];
-
-  if (!snapshot.usageMetrics.enabledInSettings) {
-    nodes.unshift(
-      buildLeafNode(
-        'usage-disabled-setting',
-        'Usage Metrics Disabled',
-        'Enable agentGrid.enableUsageMetrics to collect local counts',
-        'Agent Grid only records aggregate local counters when the setting is enabled.',
-        new vscode.ThemeIcon('circle-slash')
-      )
-    );
-    return nodes;
-  }
-
-  if (!snapshot.usageMetrics.vscodeTelemetryEnabled) {
-    nodes.unshift(
-      buildLeafNode(
-        'usage-disabled-vscode',
-        'VS Code Telemetry Disabled',
-        'Turn VS Code telemetry back on to allow local Agent Grid usage counts',
-        'Agent Grid respects vscode.env.isTelemetryEnabled before recording usage counts.',
-        new vscode.ThemeIcon('warning')
-      )
-    );
-    return nodes;
-  }
-
-  nodes.unshift(
-    buildLeafNode(
-      'usage-enabled',
-      'Usage Metrics Active',
-      `${snapshot.usageMetrics.totalEvents} events across ${snapshot.usageMetrics.eventTypes} event types`,
-      snapshot.usageMetrics.updatedAt
-        ? `Last updated ${snapshot.usageMetrics.updatedAt}. Counts are aggregate and local-only.`
-        : 'Counts are aggregate and local-only.',
-      new vscode.ThemeIcon('graph')
-    )
-  );
-
-  return nodes;
-}
-
-function buildMigrationNodes(): AgentGridSidebarNode[] {
-  return [
-    buildActionNode(
-      'migration-import',
-      'Import Repo Config To Settings',
-      `Copy ${REPO_CONFIG_FILE} into workspace overrides`,
-      new vscode.ThemeIcon('cloud-download'),
-      IMPORT_REPO_CONFIG_TO_SETTINGS_COMMAND
-    ),
-    buildActionNode(
-      'migration-migrate',
-      'Migrate Settings To Repo Config',
-      `Move current workspace settings into ${REPO_CONFIG_FILE}`,
-      new vscode.ThemeIcon('cloud-upload'),
-      MIGRATE_SETTINGS_TO_REPO_CONFIG_COMMAND
-    ),
-    buildActionNode(
-      'migration-clear',
-      'Clear Workspace Overrides',
-      'Remove local Agent Grid overrides and fall back to repo config or defaults',
-      new vscode.ThemeIcon('clear-all'),
-      CLEAR_WORKSPACE_OVERRIDES_COMMAND
-    )
-  ];
-}
-
-function buildSupportNodes(): AgentGridSidebarNode[] {
-  return [
-    buildActionNode(
-      'support-export-bundle',
-      'Export Support Bundle',
-      'Open a markdown bundle with diagnostics, effective config, and metrics state',
-      new vscode.ThemeIcon('report'),
-      EXPORT_SUPPORT_BUNDLE_COMMAND
-    ),
-    buildActionNode(
-      'support-open-issues',
-      'Open Issue Tracker',
-      'Open the Agent Grid issue templates on GitHub',
-      new vscode.ThemeIcon('issues'),
-      OPEN_ISSUE_TRACKER_COMMAND
-    ),
-    buildActionNode(
-      'support-email-feedback',
-      'Email Feedback',
-      'Send issues, wishes, or workflow ideas to info@devsheep.de',
-      new vscode.ThemeIcon('mail'),
-      EMAIL_FEEDBACK_COMMAND
-    ),
-    buildActionNode(
-      'support-run-diagnostics',
-      'Run Environment Check',
-      'Refresh the diagnostic output channel first',
-      new vscode.ThemeIcon('pulse'),
-      DIAGNOSE_COMMAND
-    )
-  ];
-}
-
-function buildLivePaneNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
-  if (snapshot.livePanes.length === 0) {
-    return [
-      buildLeafNode(
-        'live-panes-empty',
-        'No Live Pane State',
-        'Start or reattach the workspace to inspect pane command and cwd state',
-        'Agent Grid queries tmux for active pane command and path details.',
-        new vscode.ThemeIcon('info')
-      )
-    ];
-  }
-
-  return snapshot.livePanes.map((pane) =>
-    buildLeafNode(
-      `live-pane-${pane.index}`,
-      `${pane.active ? '● ' : ''}${pane.title || `Pane ${pane.index + 1}`}`,
-      `${pane.currentCommand || '(unknown command)'} • ${redactPathForPublicReport(pane.currentPath) ?? '(unknown cwd)'}`,
-      `Pane ${pane.index + 1} is ${pane.active ? 'active' : 'inactive'} and currently running ${pane.currentCommand || '(unknown command)'}.`,
-      new vscode.ThemeIcon(pane.active ? 'circle-filled' : 'circle-outline')
-    )
-  );
-}
-
-function buildStatusNode(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode {
-  const paneSummary = `${snapshot.session.terminals.length} panes, ${snapshot.session.layout}`;
-
-  if (snapshot.environment.state === 'native-windows-unsupported') {
-    return buildLeafNode(
-      'status-wsl-required',
-      'WSL Required',
-      paneSummary,
-      snapshot.environment.detail,
-      new vscode.ThemeIcon('warning'),
-      DIAGNOSE_COMMAND
-    );
-  }
-
-  if (snapshot.environment.state === 'tmux-missing') {
-    return buildLeafNode(
-      'status-tmux-missing',
-      'tmux Missing',
-      paneSummary,
-      snapshot.environment.detail,
-      new vscode.ThemeIcon('warning'),
-      DIAGNOSE_COMMAND
-    );
-  }
-
-  if (snapshot.terminalOpen) {
-    return buildLeafNode(
-      'status-running',
-      'Workspace Running',
-      paneSummary,
-      'The Agent Grid terminal is attached inside VS Code.',
-      new vscode.ThemeIcon('terminal'),
-      CREATE_COMMAND
-    );
-  }
-
-  if (snapshot.detached) {
-    return buildLeafNode(
-      'status-detached',
-      'Workspace Detached',
-      paneSummary,
-      'A matching tmux session exists. Run Create Workspace to reattach.',
-      new vscode.ThemeIcon('plug'),
-      CREATE_COMMAND
-    );
-  }
-
-  return buildLeafNode(
-    'status-idle',
-    'Workspace Idle',
-    paneSummary,
-    'Create the tmux-backed workspace to start working with Agent Grid.',
-    new vscode.ThemeIcon('circle-large-outline'),
-    CREATE_COMMAND
-  );
-}
-
-function buildWorkspaceActionNodes(): AgentGridSidebarNode[] {
-  return [
-    buildActionNode(
-      'workspace-configure',
-      'Configure Workspace',
-      'Choose custom panes, commands, layout, and where to save the setup',
-      new vscode.ThemeIcon('edit'),
-      CONFIGURE_WORKSPACE_COMMAND
-    ),
-    buildActionNode(
-      'workspace-create',
-      'Create or Recreate Workspace',
-      'Launch or reattach the tmux-backed workspace',
-      new vscode.ThemeIcon('play-circle'),
-      CREATE_COMMAND
-    ),
-    buildActionNode(
-      'workspace-setup',
-      'Run Setup Wizard',
-      'Show only relevant suggested layouts for detected CLIs, plus custom setup',
-      new vscode.ThemeIcon('wand'),
-      SETUP_WIZARD_COMMAND
-    ),
-    buildActionNode(
-      'workspace-actions',
-      'Open Advanced Actions',
-      'Open the full command menu for Agent Grid',
-      new vscode.ThemeIcon('list-selection'),
-      SHOW_ACTIONS_COMMAND
-    )
-  ];
-}
-
-function buildRepoConfigNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
-  const repoConfigPath = snapshot.repoConfig.path ?? REPO_CONFIG_FILE;
-  const nodes = [
-    buildActionNode(
-      'repo-config-open',
-      snapshot.repoConfig.exists ? 'Open Repo Config' : 'Create Repo Config',
-      snapshot.repoConfig.exists ? repoConfigPath : `Create ${REPO_CONFIG_FILE} from the current workspace`,
-      new vscode.ThemeIcon('edit'),
-      OPEN_REPO_CONFIG_COMMAND
-    ),
-    buildActionNode(
-      'repo-config-save-workspace',
-      'Save Workspace To Repo Config',
-      `Write the current layout and panes into ${REPO_CONFIG_FILE}`,
-      new vscode.ThemeIcon('save'),
-      SAVE_WORKSPACE_TO_REPO_CONFIG_COMMAND
-    ),
-    buildActionNode(
-      'repo-config-save-profile',
-      'Save Profile To Repo Config',
-      `Append or update a named profile in ${REPO_CONFIG_FILE}`,
-      new vscode.ThemeIcon('bookmark'),
-      SAVE_PROFILE_TO_REPO_CONFIG_COMMAND
-    )
-  ];
-
-  if (snapshot.repoConfig.error) {
-    nodes.push(
-      buildLeafNode(
-        'repo-config-error',
-        'Config Parse Error',
-        snapshot.repoConfig.error,
-        `Fix ${REPO_CONFIG_FILE} so Agent Grid can load it.`,
-        new vscode.ThemeIcon('error'),
-        OPEN_REPO_CONFIG_COMMAND
-      )
-    );
-    return nodes;
-  }
-
-  if (!snapshot.repoConfig.exists) {
-    nodes.push(
-      buildLeafNode(
-        'repo-config-missing',
-        'No Repo Config File',
-        'Settings still work, but the repo has no committed base config yet',
-        `Create ${REPO_CONFIG_FILE} to share layouts and profiles with the repository.`,
-        new vscode.ThemeIcon('info')
-      )
-    );
-    return nodes;
-  }
-
-  const sourceSummary = [
-    snapshot.repoConfig.config?.layout ? `layout: ${snapshot.repoConfig.config.layout}` : undefined,
-    snapshot.repoConfig.config?.terminals ? `${snapshot.repoConfig.config.terminals.length} panes` : undefined,
-    snapshot.repoConfig.config?.profiles ? `${snapshot.repoConfig.config.profiles.length} profiles` : undefined
-  ]
-    .filter(Boolean)
-    .join(' • ');
-
-  nodes.push(
-    buildLeafNode(
-      'repo-config-loaded',
-      'Repo Config Loaded',
-      sourceSummary || 'Using repo defaults',
-      `${REPO_CONFIG_FILE} provides the base Agent Grid configuration for this repository.`,
-      new vscode.ThemeIcon('check')
-    )
-  );
-
-  return nodes;
-}
-
-function buildProfileNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
-  const nodes = [
-    buildActionNode(
-      'profiles-save-current',
-      'Save Current Workspace As Profile',
-      'Persist the current layout and panes into workspace settings as a local override',
-      new vscode.ThemeIcon('add'),
-      SAVE_PROFILE_COMMAND
-    )
-  ];
-
-  if (snapshot.profiles.length === 0) {
-    nodes.push(
-      buildLeafNode(
-        'profiles-empty',
-        'No Saved Profiles',
-        `Store one from your current setup or add profiles to ${REPO_CONFIG_FILE}`,
-        `Run Save Current Workspace As Profile or commit profiles in ${REPO_CONFIG_FILE}.`,
-        new vscode.ThemeIcon('info')
-      )
-    );
-    return nodes;
-  }
-
-  return nodes.concat(
-    snapshot.profiles.map((profile) =>
-      buildActionNode(
-        `profile-${profile.name}`,
-        profile.name,
-        `${profile.terminals.length} panes, ${profile.layout}`,
-        new vscode.ThemeIcon('bookmark'),
-        APPLY_PROFILE_COMMAND,
-        [profile.name]
-      )
-    )
-  );
-}
-
-function buildPresetNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
-  return snapshot.presets.map((preset) =>
-    buildActionNode(
-      `preset-${preset.id}`,
-      preset.label,
-      preset.description,
-      new vscode.ThemeIcon('library'),
-      SETUP_PRESET_COMMAND,
-      [preset.id]
-    )
-  );
-}
-
-function buildPaneActionNodes(snapshot: AgentGridSidebarSnapshot): AgentGridSidebarNode[] {
-  if (!snapshot.terminalOpen && !snapshot.detached) {
-    return [
-      buildLeafNode(
-        'pane-actions-empty',
-        'Workspace Not Running',
-        'Create the workspace first',
-        'Pane actions act on the active tmux session.',
-        new vscode.ThemeIcon('info')
-      )
-    ];
-  }
-
-  return [
-    buildActionNode(
-      'pane-next',
-      'Focus Next Pane',
-      'Select the next tmux pane',
-      new vscode.ThemeIcon('arrow-right'),
-      FOCUS_NEXT_PANE_COMMAND
-    ),
-    buildActionNode(
-      'pane-previous',
-      'Focus Previous Pane',
-      'Select the previous tmux pane',
-      new vscode.ThemeIcon('arrow-left'),
-      FOCUS_PREVIOUS_PANE_COMMAND
-    ),
-    buildActionNode(
-      'pane-restart',
-      'Restart Active Pane',
-      'Respawn the current pane and rerun its startup command',
-      new vscode.ThemeIcon('debug-restart'),
-      RESTART_ACTIVE_PANE_COMMAND
-    ),
-    buildActionNode(
-      'pane-broadcast',
-      'Broadcast Command To All Panes',
-      'Send one command to every pane in the workspace',
-      new vscode.ThemeIcon('broadcast'),
-      BROADCAST_COMMAND
-    )
-  ];
-}
-
-function buildConfiguredPaneNodes(session: WorkspaceSession): AgentGridSidebarNode[] {
-  return session.terminals.map((terminal, index) => {
-    const cwd = terminal.cwd?.trim() || '${workspaceFolder}';
-    const startupCommand = terminal.startupCommand.trim();
-    const description = startupCommand ? `${cwd} • ${startupCommand}` : cwd;
-
-    return buildLeafNode(
-      `configured-pane-${index}`,
-      terminal.name || `Pane ${index + 1}`,
-      description,
-      startupCommand
-        ? `Pane ${index + 1} starts in ${cwd} and runs "${startupCommand}" on fresh workspace creation.`
-        : `Pane ${index + 1} starts in ${cwd}.`,
-      new vscode.ThemeIcon('terminal'),
-      CONFIGURE_WORKSPACE_COMMAND
-    );
-  });
-}
-
-function buildSectionNode(
-  id: string,
-  label: string,
-  description: string,
-  icon: vscode.ThemeIcon,
-  children: AgentGridSidebarNode[],
-  collapsibleState: vscode.TreeItemCollapsibleState = vscode.TreeItemCollapsibleState.Expanded
-): AgentGridSidebarNode {
-  return {
-    id,
-    label,
-    description,
-    tooltip: description,
-    icon,
-    collapsibleState,
-    children
-  };
-}
-
-function buildActionNode(
-  id: string,
-  label: string,
-  description: string,
-  icon: vscode.ThemeIcon,
-  command: string,
-  arguments_: unknown[] = []
-): AgentGridSidebarNode {
-  return {
-    id,
-    label,
-    description,
-    tooltip: description,
-    icon,
-    collapsibleState: vscode.TreeItemCollapsibleState.None,
-    command: {
-      command,
-      title: label,
-      arguments: arguments_
-    }
-  };
-}
-
-function buildLeafNode(
-  id: string,
-  label: string,
-  description: string,
-  tooltip: string,
-  icon: vscode.ThemeIcon,
-  command?: string
-): AgentGridSidebarNode {
-  return {
-    id,
-    label,
-    description,
-    tooltip,
-    icon,
-    collapsibleState: vscode.TreeItemCollapsibleState.None,
-    command: command
-      ? {
-          command,
-          title: label
+    switch (message.type) {
+      case 'selectActiveSetup':
+        if (isRecord(message.payload) && typeof message.payload.setupId === 'string') {
+          await this.actions.onSelectActiveSetup(message.payload.setupId);
         }
-      : undefined
-  };
+        return;
+      case 'saveActiveSetup':
+        if (isRecord(message.payload) && typeof message.payload.setupId === 'string') {
+          const destination = this.readDestination(message.payload.destination);
+          const template = this.readTemplate(message.payload.template);
+          if (destination && template) {
+            await this.actions.onSaveActiveSetup(message.payload.setupId, destination, template, Boolean(message.payload.createWorkspace));
+          }
+        }
+        return;
+      case 'saveAsNewProfile':
+        if (isRecord(message.payload) && typeof message.payload.profileName === 'string') {
+          const destination = this.readDestination(message.payload.destination);
+          const template = this.readTemplate(message.payload.template);
+          if (destination && template) {
+            await this.actions.onSaveAsNewProfile(
+              message.payload.profileName,
+              destination,
+              template,
+              Boolean(message.payload.createWorkspace)
+            );
+          }
+        }
+        return;
+      case 'deleteProfile':
+        if (isRecord(message.payload) && typeof message.payload.profileName === 'string') {
+          await this.actions.onDeleteProfile(message.payload.profileName);
+        }
+        return;
+      case 'broadcastCommand':
+        if (isRecord(message.payload) && typeof message.payload.command === 'string') {
+          await this.actions.onBroadcastCommand(message.payload.command);
+        }
+        return;
+      case 'applyLiveLayout':
+        if (isRecord(message.payload)) {
+          const layout = readLayoutName(message.payload.layout);
+          if (layout) {
+            await this.actions.onApplyLiveLayout(layout);
+          }
+        }
+        return;
+      case 'hideLivePane':
+        if (isRecord(message.payload) && typeof message.payload.paneIndex === 'number') {
+          await this.actions.onHideLivePane(message.payload.paneIndex);
+        }
+        return;
+      case 'restoreHiddenPane':
+        if (isRecord(message.payload) && typeof message.payload.windowName === 'string') {
+          await this.actions.onRestoreHiddenPane(message.payload.windowName);
+        }
+        return;
+      case 'runDiagnostics':
+        await this.actions.onRunDiagnostics();
+        return;
+      case 'exportSupportBundle':
+        await this.actions.onExportSupportBundle();
+        return;
+      case 'openGuide':
+        await this.actions.onOpenGuide();
+        return;
+      case 'openIssueTracker':
+        await this.actions.onOpenIssueTracker();
+        return;
+      case 'emailFeedback':
+        await this.actions.onEmailFeedback();
+        return;
+      default:
+        return;
+    }
+  }
+
+  private readDestination(value: unknown): ConfigurationDestination | undefined {
+    return value === 'user' || value === 'repo' ? value : undefined;
+  }
+
+  private readTemplate(value: unknown): ConfigurationTemplate | undefined {
+    if (!isRecord(value)) {
+      return undefined;
+    }
+
+    const layout = readLayoutName(value.layout);
+    const terminals = normalizeTerminalDefinitions(Array.isArray(value.terminals) ? value.terminals : []);
+    if (!layout || terminals.length === 0) {
+      return undefined;
+    }
+
+    return { layout, terminals };
+  }
+
+  private postState(): void {
+    if (!this.view || !this.state) {
+      return;
+    }
+
+    void this.view.webview.postMessage({
+      type: 'state',
+      payload: this.state
+    });
+  }
+
+  private getHtml(): string {
+    const nonce = getNonce();
+    return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --border: var(--vscode-editorWidget-border, rgba(127,127,127,0.35));
+        --muted: var(--vscode-descriptionForeground);
+        --bg-subtle: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-button-background) 12%);
+      }
+      body {
+        font-family: var(--vscode-font-family);
+        margin: 0;
+        padding: 16px;
+        color: var(--vscode-foreground);
+        background: var(--vscode-sideBar-background);
+      }
+      .stack { display: grid; gap: 14px; }
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+        background: var(--bg-subtle);
+      }
+      .status { display: grid; gap: 8px; }
+      .status-badge {
+        display: inline-flex;
+        width: fit-content;
+        padding: 4px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .tone-idle { background: color-mix(in srgb, var(--vscode-editor-background) 80%, var(--vscode-foreground) 20%); }
+      .tone-running { background: color-mix(in srgb, var(--vscode-button-background) 30%, transparent); }
+      .tone-warning { background: color-mix(in srgb, var(--vscode-inputValidation-warningBackground, #a15c00) 35%, transparent); }
+      .muted { color: var(--muted); font-size: 12px; line-height: 1.45; }
+      label { display: grid; gap: 6px; font-size: 12px; }
+      select, input, button {
+        font: inherit;
+      }
+      select, input {
+        width: 100%;
+        box-sizing: border-box;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--vscode-input-background);
+        color: var(--vscode-input-foreground);
+        padding: 8px;
+      }
+      button {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: var(--vscode-button-background);
+        color: var(--vscode-button-foreground);
+        cursor: pointer;
+      }
+      button.secondary {
+        background: transparent;
+        color: var(--vscode-foreground);
+      }
+      button.linkish {
+        background: transparent;
+        border: 0;
+        color: var(--vscode-textLink-foreground);
+        padding: 0;
+        text-align: left;
+      }
+      button:disabled, select:disabled, input:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .section-title {
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .subtle-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+      }
+      .layout-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .grid-preview-shell {
+        display: grid;
+        gap: 8px;
+      }
+      .grid-preview {
+        display: grid;
+        gap: 6px;
+        min-height: 146px;
+      }
+      .grid-preview.layout-tiled {
+        grid-template-columns: 1fr 1fr;
+      }
+      .grid-preview.layout-even-vertical {
+        grid-auto-flow: column;
+        grid-auto-columns: 1fr;
+      }
+      .grid-preview.layout-even-horizontal {
+        grid-template-columns: 1fr;
+      }
+      .grid-preview.layout-main-horizontal {
+        grid-template-columns: 1fr 1fr;
+      }
+      .grid-preview.layout-main-horizontal .preview-pane[data-index="0"] {
+        grid-column: 1 / -1;
+        min-height: 54px;
+      }
+      .grid-preview.layout-main-vertical {
+        grid-template-columns: 1.2fr 0.8fr;
+      }
+      .grid-preview.layout-main-vertical .preview-pane[data-index="0"] {
+        grid-row: 1 / span 3;
+        min-height: 132px;
+      }
+      .preview-pane {
+        min-height: 38px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--vscode-editor-background) 82%, var(--vscode-button-background) 18%);
+        display: grid;
+        align-content: center;
+        padding: 10px;
+        gap: 4px;
+      }
+      .preview-pane strong {
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .preview-pane span {
+        font-size: 11px;
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .preview-pane.hidden {
+        border-style: dashed;
+        opacity: 0.72;
+        background: transparent;
+      }
+      .layout-option {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px;
+        background: transparent;
+        text-align: left;
+        color: var(--vscode-foreground);
+      }
+      .layout-option.active {
+        border-color: var(--vscode-focusBorder);
+        background: color-mix(in srgb, var(--vscode-button-background) 18%, transparent);
+      }
+      .layout-preview {
+        display: grid;
+        gap: 3px;
+        margin-bottom: 8px;
+      }
+      .layout-preview span {
+        display: block;
+        height: 8px;
+        border-radius: 3px;
+        background: color-mix(in srgb, var(--vscode-button-background) 35%, var(--vscode-editor-background));
+      }
+      .layout-preview.cols-2 { grid-template-columns: 1fr 1fr; }
+      .layout-preview.cols-3 { grid-template-columns: 1.3fr 1fr 1fr; }
+      .pane-list { display: grid; gap: 10px; }
+      .pane-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px;
+        display: grid;
+        gap: 8px;
+      }
+      .pane-title { font-size: 12px; font-weight: 600; }
+      .actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+      .actions.two { grid-template-columns: 1fr 1fr; }
+      .two-col { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+      .footer-links { display: flex; flex-wrap: wrap; gap: 10px; }
+      .chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+      details summary {
+        cursor: pointer;
+        font-size: 12px;
+        color: var(--vscode-textLink-foreground);
+      }
+      .empty { color: var(--muted); font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div id="app" class="stack"><div class="empty">Loading Agent Grid...</div></div>
+    <script nonce="${nonce}">
+      const vscode = acquireVsCodeApi();
+      let state;
+
+      window.addEventListener('message', (event) => {
+        if (event.data?.type === 'state') {
+          state = event.data.payload;
+          render();
+        }
+      });
+
+      function render() {
+        const app = document.getElementById('app');
+        if (!state) {
+          app.innerHTML = '<div class="empty">Loading Agent Grid...</div>';
+          return;
+        }
+
+        const template = structuredClone(state.template);
+        const setupOptions = state.availableSetups.map((item) =>
+          '<option value="' + escapeHtml(item.id) + '"' + (item.id === state.activeSetupId ? ' selected' : '') + '>' + escapeHtml(item.label) + '</option>'
+        ).join('');
+        const starterOptions = state.starterTemplates.map((item) =>
+          '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.label) + '</option>'
+        ).join('');
+        const storageOptions = state.availableDestinations.map((item) =>
+          '<option value="' + escapeHtml(item.value) + '"' + (item.value === state.selectedStorage ? ' selected' : '') + (item.disabled ? ' disabled' : '') + '>' + escapeHtml(item.label) + '</option>'
+        ).join('');
+
+        app.innerHTML = [
+          '<div class="card status">',
+            '<div class="status-badge tone-' + escapeHtml(state.statusTone) + '">' + escapeHtml(state.statusLabel) + '</div>',
+            '<div class="muted">' + escapeHtml(state.statusDetail) + '</div>',
+            '<label>Active setup<select id="activeSetup">' + setupOptions + '</select></label>',
+            '<div class="muted">' + escapeHtml(state.activeSetupDetail) + '</div>',
+          '</div>',
+          '<div class="card stack">',
+            '<div class="section-title">Configure Grid</div>',
+            '<div class="muted">' + escapeHtml(state.activeSetupLabel) + '</div>',
+            (state.starterTemplates.length > 0
+              ? '<label>Start from<select id="starter"><option value="">Keep current editor</option>' + starterOptions + '</select></label>'
+              : ''),
+            '<div class="grid-preview-shell"><div class="subtle-label">Preview</div><div id="gridPreview" class="grid-preview"></div></div>',
+            '<div class="subtle-label">Layout</div>',
+            '<div id="layoutPicker" class="layout-grid"></div>',
+            '<div class="two-col"><label>Pane count<select id="paneCount">' + buildPaneCountOptions(template.terminals.length) + '</select></label>' +
+              (state.canApplyLiveLayout ? '<button class="secondary" id="applyLiveLayout">Apply Layout Live</button>' : '<div></div>') + '</div>',
+            '<div class="subtle-label">Startup command for all panes</div>',
+            '<div class="two-col"><input id="bulkStartup" placeholder="Leave empty for plain shells" /><button class="secondary" id="applyBulkStartup">Apply To All</button></div>',
+            '<div class="subtle-label">Send command to all live panes</div>',
+            '<div class="two-col"><input id="broadcastCommand" placeholder="npm test" /><button class="secondary" id="sendBroadcast">Send Now</button></div>',
+            '<div id="panes" class="pane-list"></div>',
+            (state.hiddenPanes.length > 0
+              ? '<div class="subtle-label">Hidden right now</div><div id="hiddenPanes" class="chip-list"></div>'
+              : ''),
+            '<div class="actions">',
+              '<button id="saveOnly">Save</button>',
+              '<button id="saveAsProfile">Save As New Profile</button>',
+              '<button id="saveAndCreate"' + (state.hasWorkspaceFolder ? '' : ' disabled') + '>Save + Create</button>',
+            '</div>',
+            '<div class="actions two">',
+              '<button class="secondary" id="updateProfile"' + (state.canUpdateProfile ? '' : ' disabled') + '>Update Profile</button>',
+              '<button class="secondary" id="deleteProfile"' + (state.canDeleteProfile ? '' : ' disabled') + '>Delete Profile</button>',
+            '</div>',
+          '</div>',
+          '<div class="card stack">',
+            '<details>',
+              '<summary title="Stores Agent Grid setup in .agent-grid.json so a team can use the same workspace layout in this repository.">Advanced Storage</summary>',
+              '<div class="stack" style="margin-top:10px;">',
+                '<label>Save location<select id="destination">' + storageOptions + '</select></label>',
+                '<div id="storageDetail" class="muted">' + escapeHtml(state.storageDetail) + '</div>',
+              '</div>',
+            '</details>',
+          '</div>',
+          '<div class="card stack">',
+            '<div class="section-title">Support</div>',
+            '<div class="footer-links">',
+              '<button class="secondary" id="runDiagnostics">Environment Check</button>',
+              '<button class="secondary" id="exportSupportBundle">Create Support Report</button>',
+            '</div>',
+            '<div class="footer-links">',
+              '<button class="linkish" id="openGuide">Guide</button>',
+              '<button class="linkish" id="openIssues">GitHub Issues</button>',
+              '<button class="linkish" id="emailFeedback">Email Feedback</button>',
+            '</div>',
+          '</div>'
+        ].join('');
+
+        const panesRoot = document.getElementById('panes');
+        const hiddenPanesRoot = document.getElementById('hiddenPanes');
+        const activeSetupSelect = document.getElementById('activeSetup');
+        const starterSelect = document.getElementById('starter');
+        const gridPreview = document.getElementById('gridPreview');
+        const layoutPicker = document.getElementById('layoutPicker');
+        const paneCountSelect = document.getElementById('paneCount');
+        const destinationSelect = document.getElementById('destination');
+        const storageDetail = document.getElementById('storageDetail');
+        const workspaceToken = "${'${workspaceFolder}'}";
+
+        function ensurePaneCount(count) {
+          while (template.terminals.length < count) {
+            template.terminals.push({
+              name: 'Pane ' + (template.terminals.length + 1),
+              startupCommand: '',
+              cwd: workspaceToken
+            });
+          }
+          template.terminals = template.terminals.slice(0, count);
+        }
+
+        function buildLayoutPicker() {
+          const layouts = [
+            { value: 'tiled', label: 'Tiled', preview: '<div class="layout-preview cols-2"><span></span><span></span><span></span><span></span></div>' },
+            { value: 'main-vertical', label: 'Main Vertical', preview: '<div class="layout-preview cols-3"><span></span><span></span><span></span></div>' },
+            { value: 'main-horizontal', label: 'Main Horizontal', preview: '<div class="layout-preview"><span style="height:14px"></span><span></span><span></span></div>' },
+            { value: 'even-vertical', label: 'Even Vertical', preview: '<div class="layout-preview cols-2"><span style="height:18px"></span><span style="height:18px"></span></div>' },
+            { value: 'even-horizontal', label: 'Even Horizontal', preview: '<div class="layout-preview"><span></span><span></span><span></span></div>' }
+          ];
+
+          layoutPicker.innerHTML = layouts.map((layout) =>
+            '<button class="layout-option' + (template.layout === layout.value ? ' active' : '') + '" data-layout="' + layout.value + '">' +
+              layout.preview +
+              '<div>' + layout.label + '</div>' +
+            '</button>'
+          ).join('');
+
+          layoutPicker.querySelectorAll('[data-layout]').forEach((button) => {
+            button.addEventListener('click', (event) => {
+              event.preventDefault();
+              template.layout = button.dataset.layout;
+              buildLayoutPicker();
+              renderPreview();
+            });
+          });
+        }
+
+        function renderPreview() {
+          const hiddenPanes = state.hiddenPanes || [];
+          gridPreview.className = 'grid-preview layout-' + template.layout;
+          gridPreview.innerHTML = template.terminals.map((pane, index) =>
+            '<div class="preview-pane" data-index="' + index + '">' +
+              '<strong>' + escapeHtml(pane.name || ('Pane ' + (index + 1))) + '</strong>' +
+              '<span>' + escapeHtml((pane.startupCommand || '').trim() || 'Plain shell') + '</span>' +
+            '</div>'
+          ).join('') + hiddenPanes.map((pane) =>
+            '<div class="preview-pane hidden">' +
+              '<strong>' + escapeHtml(pane.title || 'Hidden pane') + '</strong>' +
+              '<span>' + escapeHtml((pane.currentCommand || '').trim() || 'Hidden right now') + '</span>' +
+            '</div>'
+          ).join('');
+        }
+
+        function renderPanes() {
+          panesRoot.innerHTML = template.terminals.map((pane, index) => [
+            '<div class="pane-card">',
+              '<div class="pane-title">Pane ' + (index + 1) + '</div>',
+              '<label>Name<input data-pane="' + index + '" data-field="name" value="' + escapeHtml(pane.name || ('Pane ' + (index + 1))) + '" /></label>',
+              '<label>Startup command<input data-pane="' + index + '" data-field="startupCommand" value="' + escapeHtml(pane.startupCommand || '') + '" placeholder="Leave empty for a plain shell" /></label>',
+              '<label>Working directory<input data-pane="' + index + '" data-field="cwd" value="' + escapeHtml(pane.cwd || workspaceToken) + '" placeholder="' + workspaceToken + '" /></label>',
+              (state.canApplyLiveLayout ? '<button class="secondary" data-hide-pane="' + index + '">Hide Now</button>' : ''),
+            '</div>'
+          ].join('')).join('');
+
+          panesRoot.querySelectorAll('input').forEach((input) => {
+            input.addEventListener('input', (event) => {
+              const target = event.target;
+              const paneIndex = Number(target.dataset.pane);
+              const field = target.dataset.field;
+              if (!Number.isInteger(paneIndex) || !field) {
+                return;
+              }
+              template.terminals[paneIndex][field] = target.value;
+              renderPreview();
+            });
+          });
+
+          panesRoot.querySelectorAll('[data-hide-pane]').forEach((button) => {
+            button.addEventListener('click', () => {
+              const paneIndex = Number(button.dataset.hidePane);
+              if (!Number.isInteger(paneIndex)) {
+                return;
+              }
+              vscode.postMessage({ type: 'hideLivePane', payload: { paneIndex } });
+            });
+          });
+        }
+
+        function renderHiddenPanes() {
+          if (!hiddenPanesRoot) {
+            return;
+          }
+          hiddenPanesRoot.innerHTML = state.hiddenPanes.map((pane) =>
+            '<div class="chip">' +
+              '<span>' + escapeHtml(pane.title || 'Hidden pane') + '</span>' +
+              '<button class="linkish" data-restore-window="' + escapeHtml(pane.windowName) + '">Show</button>' +
+            '</div>'
+          ).join('');
+
+          hiddenPanesRoot.querySelectorAll('[data-restore-window]').forEach((button) => {
+            button.addEventListener('click', () => {
+              vscode.postMessage({ type: 'restoreHiddenPane', payload: { windowName: button.dataset.restoreWindow } });
+            });
+          });
+        }
+
+        function currentPayload() {
+          return {
+            destination: destinationSelect.value,
+            template: {
+              layout: template.layout,
+              terminals: template.terminals.map((pane, index) => ({
+                name: (pane.name || ('Pane ' + (index + 1))).trim(),
+                startupCommand: (pane.startupCommand || '').trim(),
+                cwd: (pane.cwd || '').trim()
+              }))
+            }
+          };
+        }
+
+        activeSetupSelect.addEventListener('change', () => {
+          vscode.postMessage({ type: 'selectActiveSetup', payload: { setupId: activeSetupSelect.value } });
+        });
+
+        if (starterSelect) {
+          starterSelect.addEventListener('change', () => {
+            const selected = state.starterTemplates.find((item) => item.id === starterSelect.value);
+            if (!selected) {
+              return;
+            }
+            if (!window.confirm('Replace the current editor contents with this starter?')) {
+              starterSelect.value = '';
+              return;
+            }
+            template.layout = selected.template.layout;
+            template.terminals = structuredClone(selected.template.terminals);
+            paneCountSelect.value = String(template.terminals.length);
+            buildLayoutPicker();
+            renderPreview();
+            renderPanes();
+          });
+        }
+
+        paneCountSelect.addEventListener('change', () => {
+          ensurePaneCount(Number(paneCountSelect.value));
+          renderPreview();
+          renderPanes();
+        });
+
+        destinationSelect.addEventListener('change', () => {
+          const selected = state.availableDestinations.find((item) => item.value === destinationSelect.value);
+          storageDetail.textContent = selected ? selected.description : '';
+        });
+
+        document.getElementById('saveOnly').addEventListener('click', () => {
+          vscode.postMessage({ type: 'saveActiveSetup', payload: { setupId: state.activeSetupId, ...currentPayload(), createWorkspace: false } });
+        });
+
+        document.getElementById('saveAndCreate').addEventListener('click', () => {
+          vscode.postMessage({ type: 'saveActiveSetup', payload: { setupId: state.activeSetupId, ...currentPayload(), createWorkspace: true } });
+        });
+
+        document.getElementById('saveAsProfile').addEventListener('click', () => {
+          const profileName = window.prompt('New profile name');
+          if (!profileName || !profileName.trim()) {
+            return;
+          }
+          vscode.postMessage({ type: 'saveAsNewProfile', payload: { profileName: profileName.trim(), ...currentPayload(), createWorkspace: false } });
+        });
+
+        document.getElementById('updateProfile').addEventListener('click', () => {
+          vscode.postMessage({ type: 'saveActiveSetup', payload: { setupId: state.activeSetupId, ...currentPayload(), createWorkspace: false } });
+        });
+
+        document.getElementById('deleteProfile').addEventListener('click', () => {
+          if (!state.canDeleteProfile) {
+            return;
+          }
+          const profileName = state.activeSetupId.replace('profile:', '');
+          if (!window.confirm('Delete profile "' + profileName + '"?')) {
+            return;
+          }
+          vscode.postMessage({ type: 'deleteProfile', payload: { profileName } });
+        });
+
+        document.getElementById('applyBulkStartup').addEventListener('click', () => {
+          const value = document.getElementById('bulkStartup').value || '';
+          template.terminals = template.terminals.map((pane) => ({ ...pane, startupCommand: value }));
+          renderPreview();
+          renderPanes();
+        });
+
+        document.getElementById('sendBroadcast').addEventListener('click', () => {
+          const command = (document.getElementById('broadcastCommand').value || '').trim();
+          if (!command) {
+            return;
+          }
+          vscode.postMessage({ type: 'broadcastCommand', payload: { command } });
+        });
+
+        const liveLayoutButton = document.getElementById('applyLiveLayout');
+        if (liveLayoutButton) {
+          liveLayoutButton.addEventListener('click', () => {
+            vscode.postMessage({ type: 'applyLiveLayout', payload: { layout: template.layout } });
+          });
+        }
+
+        document.getElementById('runDiagnostics').addEventListener('click', () => {
+          vscode.postMessage({ type: 'runDiagnostics' });
+        });
+        document.getElementById('exportSupportBundle').addEventListener('click', () => {
+          vscode.postMessage({ type: 'exportSupportBundle' });
+        });
+        document.getElementById('openGuide').addEventListener('click', () => {
+          vscode.postMessage({ type: 'openGuide' });
+        });
+        document.getElementById('openIssues').addEventListener('click', () => {
+          vscode.postMessage({ type: 'openIssueTracker' });
+        });
+        document.getElementById('emailFeedback').addEventListener('click', () => {
+          vscode.postMessage({ type: 'emailFeedback' });
+        });
+
+        ensurePaneCount(template.terminals.length);
+        buildLayoutPicker();
+        renderPreview();
+        renderPanes();
+        renderHiddenPanes();
+      }
+
+      function buildPaneCountOptions(selected) {
+        return [1,2,3,4,5,6].map((count) =>
+          '<option value="' + count + '"' + (count === selected ? ' selected' : '') + '>' + count + '</option>'
+        ).join('');
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+    </script>
+  </body>
+</html>`;
+  }
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -3278,32 +2184,26 @@ export function deactivate(): void {
   controller = undefined;
 }
 
+function getNonce(): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let value = '';
+  for (let index = 0; index < 16; index += 1) {
+    value += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+  }
+  return value;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
-}
-
-function readTrimmedString(value: unknown): string | undefined {
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function readString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
 }
 
 function expandHomeDirectory(value: string): string {
   if (value === '~') {
     return os.homedir();
   }
-
   if (value.startsWith('~/') || value.startsWith('~\\')) {
     return path.join(os.homedir(), value.slice(2));
   }
-
   return value;
 }
 
@@ -3311,7 +2211,6 @@ function asErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
     return error.message;
   }
-
   return 'Agent Grid failed to complete the tmux action.';
 }
 
@@ -3334,4 +2233,27 @@ function captureEditorState(editor: vscode.TextEditor | undefined):
     viewColumn: editor.viewColumn,
     selection: editor.selection
   };
+}
+
+function isExecutableOnPath(command: string): boolean {
+  const rawPath = process.env.PATH;
+  if (!rawPath) {
+    return false;
+  }
+
+  for (const directory of rawPath.split(path.delimiter)) {
+    if (!directory) {
+      continue;
+    }
+
+    const candidate = path.join(directory, command);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return true;
+    } catch {
+      continue;
+    }
+  }
+
+  return false;
 }

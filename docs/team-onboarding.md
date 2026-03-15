@@ -12,24 +12,24 @@ Use this flow when you want a repository to ship a shared Agent Grid setup.
 ## Suggested Rollout
 
 1. One maintainer creates a layout locally.
-2. Run `Agent Grid: Save Workspace To Repo Config`.
-3. Optionally run `Agent Grid: Save Profile To Repo Config` for extra named flows.
+2. Open the `Agent Grid` sidebar and configure the `Default Setup` or a profile.
+3. In `Advanced Storage`, switch to `Shared In Repo` and save.
 4. Commit `.agent-grid.json`.
 5. Teammates install Agent Grid and open the repo.
-6. Teammates run `Create Workspace` or `Run Setup Wizard` from the sidebar.
+6. Teammates open the `Agent Grid` sidebar and choose `Save + Create`.
 
-## When To Use Workspace Overrides
+## When To Use Personal Defaults
 
-Use local workspace overrides for:
+Use personal defaults for:
 
 - different agent CLI choices
 - personal test commands
 - temporary experiments
 
-Do not use local workspace overrides for:
+Do not use personal defaults for:
 
 - the default team workflow
 - committed review or release profiles
 - repo-wide frontend/backend pane paths
 
-If a repo already has local workspace settings that should become shared, run `Agent Grid: Migrate Settings To Repo Config`.
+If a repository should be shared with the team, save it into `.agent-grid.json` from the advanced storage section instead of keeping it only in personal settings.
