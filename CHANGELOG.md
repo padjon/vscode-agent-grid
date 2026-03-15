@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.1
+
+- live draft application now opens the current unsaved sidebar setup as a workspace even when no Agent Grid session is running yet
+- reducing a running layout now hides overflow panes instead of failing with a pane-count mismatch
+- live pane restore logic can bring hidden panes back when a larger layout is applied again
+- improved draft/live wording so the sidebar action reflects whether it will open a draft workspace or apply changes to a running one
+
 ## 1.2.0
 
 - replaced the old preview-based layout picker with a real grid editor in the sidebar, including rows, columns, merge, split, and shape starters

@@ -4,6 +4,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 import {
+  buildDefaultTerminal,
   buildPresetGridLayout,
   buildSupportBundleMarkdown,
   buildTmuxLayoutPlan,
@@ -132,7 +133,9 @@ interface SidebarState {
   starterTemplates: SidebarStarterOption[];
   canUpdateProfile: boolean;
   canDeleteProfile: boolean;
-  canApplyLiveLayout: boolean;
+  canApplyWorkspaceDraft: boolean;
+  applyWorkspaceDraftLabel: string;
+  canUseLivePaneActions: boolean;
   hiddenPanes: HiddenPaneInfo[];
 }
 
@@ -152,7 +155,7 @@ interface AgentGridSidebarActions {
   ) => Promise<void>;
   onDeleteProfile: (profileName: string) => Promise<void>;
   onBroadcastCommand: (command: string) => Promise<void>;
-  onApplyLiveLayout: (layout: WorkspaceLayout) => Promise<void>;
+  onApplyWorkspaceDraft: (template: ConfigurationTemplate) => Promise<void>;
   onHideLivePane: (paneIndex: number) => Promise<void>;
   onRestoreHiddenPane: (windowName: string) => Promise<void>;
   onRunDiagnostics: () => Promise<void>;
@@ -188,8 +191,8 @@ class AgentGridController implements vscode.Disposable {
       onBroadcastCommand: async (command) => {
         await this.broadcastCommand(command);
       },
-      onApplyLiveLayout: async (layout) => {
-        await this.applyLiveLayout(layout);
+      onApplyWorkspaceDraft: async (template) => {
+        await this.applyWorkspaceDraft(template);
       },
       onHideLivePane: async (paneIndex) => {
         await this.hideLivePane(paneIndex);
@@ -399,7 +402,9 @@ class AgentGridController implements vscode.Disposable {
       starterTemplates: this.getStarterTemplates(),
       canUpdateProfile: activeSetup.kind === 'profile',
       canDeleteProfile: activeSetup.kind === 'profile',
-      canApplyLiveLayout: environment.state === 'ready' && (terminalOpen || detached),
+      canApplyWorkspaceDraft: environment.state === 'ready' && Boolean(vscode.workspace.workspaceFolders?.length),
+      applyWorkspaceDraftLabel: terminalOpen || detached ? 'Apply To Running Workspace' : 'Open Draft Workspace',
+      canUseLivePaneActions: terminalOpen || detached,
       hiddenPanes
     };
   }
@@ -818,6 +823,23 @@ class AgentGridController implements vscode.Disposable {
     await this.refreshSurface(environment);
   }
 
+  private async openDraftWorkspace(session: WorkspaceSession, environment?: EnvironmentInfo): Promise<void> {
+    const resolvedEnvironment = environment ?? (await this.inspectEnvironment(session));
+    if (resolvedEnvironment.state !== 'ready') {
+      await vscode.window.showErrorMessage(resolvedEnvironment.detail);
+      await this.refreshSurface(resolvedEnvironment);
+      return;
+    }
+
+    const previousTerminal = vscode.window.activeTerminal;
+    const previousEditor = captureEditorState(vscode.window.activeTextEditor);
+    const terminal = this.createTerminal();
+    await this.revealAndPinTerminal(terminal, previousEditor, previousTerminal);
+    terminal.sendText(this.buildBootstrapCommand(session, false), true);
+    await this.context.workspaceState.update(SESSION_STATE_KEY, true);
+    await this.refreshSurface(resolvedEnvironment);
+  }
+
   private createTerminal(): vscode.Terminal {
     return vscode.window.createTerminal({
       name: TERMINAL_TITLE,
@@ -1160,9 +1182,26 @@ class AgentGridController implements vscode.Disposable {
     }
   }
 
-  private async applyLiveLayout(layout: WorkspaceLayout): Promise<void> {
-    await this.runPaneMutation(async (session) => {
-      await this.applyLayoutToRunningSession(session, layout);
+  private async applyWorkspaceDraft(template: ConfigurationTemplate): Promise<void> {
+    const session = this.getSessionFromTemplate(template);
+    const environment = await this.inspectEnvironment(session);
+
+    if (environment.state !== 'ready') {
+      await vscode.window.showErrorMessage(environment.detail);
+      await this.refreshSurface(environment);
+      return;
+    }
+
+    const terminalOpen = Boolean(this.findExistingTerminal());
+    const detached = await this.hasDetachedTmuxSession(session);
+
+    if (!terminalOpen && !detached) {
+      await this.openDraftWorkspace(session, environment);
+      return;
+    }
+
+    await this.runPaneMutationWithSession(session, async (runningSession) => {
+      await this.applyTemplateToRunningSession(runningSession, template);
     });
   }
 
@@ -1176,14 +1215,7 @@ class AgentGridController implements vscode.Disposable {
 
   private async restoreHiddenPane(windowName: string): Promise<void> {
     await this.runPaneMutation(async (session) => {
-      await this.execTmux(session, [
-        'join-pane',
-        '-s',
-        `${session.sessionName}:${windowName}.0`,
-        '-t',
-        `${session.sessionName}:${session.windowName}`
-      ]);
-      await this.execTmux(session, ['kill-window', '-t', `${session.sessionName}:${windowName}`]);
+      await this.restoreHiddenPaneWindow(session, windowName);
       const targetLayout = this.getSessionFromSettings().layout;
       if ((await this.listVisiblePaneDetails(session)).length === getLayoutPaneCount(targetLayout)) {
         await this.applyLayoutToRunningSession(session, targetLayout);
@@ -1191,13 +1223,54 @@ class AgentGridController implements vscode.Disposable {
     });
   }
 
-  private async applyLayoutToRunningSession(session: WorkspaceSession, layout: WorkspaceLayout): Promise<void> {
-    const visiblePanes = await this.listVisiblePaneDetails(session);
+  private async restoreHiddenPaneWindow(session: WorkspaceSession, windowName: string): Promise<void> {
+    await this.execTmux(session, [
+      'join-pane',
+      '-s',
+      `${session.sessionName}:${windowName}.0`,
+      '-t',
+      `${session.sessionName}:${session.windowName}`
+    ]);
+    await this.execTmux(session, ['kill-window', '-t', `${session.sessionName}:${windowName}`]);
+  }
+
+  private async applyTemplateToRunningSession(session: WorkspaceSession, template: ConfigurationTemplate): Promise<void> {
+    const paneTargets = await this.applyLayoutToRunningSession(session, template.layout);
+    for (let index = 0; index < paneTargets.length; index += 1) {
+      const pane = template.terminals[index] ?? buildDefaultTerminal(index + 1);
+      const title = pane.name.trim() || `Pane ${index + 1}`;
+      await this.execTmux(session, ['select-pane', '-t', paneTargets[index], '-T', title]);
+    }
+  }
+
+  private async applyLayoutToRunningSession(session: WorkspaceSession, layout: WorkspaceLayout): Promise<string[]> {
+    let visiblePanes = await this.listVisiblePaneDetails(session);
     const desiredPaneCount = getLayoutPaneCount(layout);
+
+    while (visiblePanes.length > desiredPaneCount) {
+      const paneToHide = visiblePanes.pop();
+      if (!paneToHide) {
+        break;
+      }
+      const hiddenWindowName = `${HIDDEN_WINDOW_PREFIX}-${paneToHide.index}-${Date.now()}`;
+      await this.execTmux(session, ['break-pane', '-d', '-s', paneToHide.paneId, '-n', hiddenWindowName]);
+      visiblePanes = await this.listVisiblePaneDetails(session);
+    }
+
+    if (visiblePanes.length < desiredPaneCount) {
+      const hiddenPanes = await this.listHiddenPanes(session);
+      for (const hiddenPane of hiddenPanes) {
+        if (visiblePanes.length >= desiredPaneCount) {
+          break;
+        }
+        await this.restoreHiddenPaneWindow(session, hiddenPane.windowName);
+        visiblePanes = await this.listVisiblePaneDetails(session);
+      }
+    }
 
     if (visiblePanes.length !== desiredPaneCount) {
       throw new Error(
-        `Live layout changes currently require the same number of visible panes. Visible: ${visiblePanes.length}, target: ${desiredPaneCount}. Save and recreate the workspace for pane-count changes.`
+        `Agent Grid could not match the requested pane count live. Visible: ${visiblePanes.length}, target: ${desiredPaneCount}. Open the draft workspace or save and recreate the workspace instead.`
       );
     }
 
@@ -1222,6 +1295,7 @@ class AgentGridController implements vscode.Disposable {
       await this.execTmux(session, ['swap-pane', '-s', detached.paneId, '-t', targetPaneId]);
       await this.execTmux(session, ['kill-window', '-t', `${session.sessionName}:${detached.windowName}`]);
     }
+    return paneTargets;
   }
 
   private async buildLiveLayoutFromPlan(
@@ -1289,7 +1363,13 @@ class AgentGridController implements vscode.Disposable {
   }
 
   private async runPaneMutation(action: (session: WorkspaceSession) => Promise<void>): Promise<boolean> {
-    const session = this.getSessionFromSettings();
+    return this.runPaneMutationWithSession(this.getSessionFromSettings(), action);
+  }
+
+  private async runPaneMutationWithSession(
+    session: WorkspaceSession,
+    action: (session: WorkspaceSession) => Promise<void>
+  ): Promise<boolean> {
     const environment = await this.inspectEnvironment(session);
 
     if (environment.state !== 'ready') {
@@ -1299,7 +1379,7 @@ class AgentGridController implements vscode.Disposable {
     }
 
     if (!(await this.hasDetachedTmuxSession(session)) && !this.findExistingTerminal()) {
-      await vscode.window.showInformationMessage('Create the Agent Grid workspace before using live pane actions.');
+      await vscode.window.showInformationMessage('Open the draft workspace before using live pane actions.');
       return false;
     }
 
@@ -1609,6 +1689,25 @@ class AgentGridController implements vscode.Disposable {
     };
   }
 
+  private getSessionFromTemplate(
+    template: ConfigurationTemplate,
+    effectiveConfig: ReturnType<AgentGridController['getEffectiveWorkspaceConfig']> = this.getEffectiveWorkspaceConfig()
+  ): WorkspaceSession {
+    const paneCount = getLayoutPaneCount(template.layout);
+    const normalized = normalizeTerminalDefinitions(template.terminals).slice(0, paneCount);
+    while (normalized.length < paneCount) {
+      normalized.push(buildDefaultTerminal(normalized.length + 1));
+    }
+
+    return {
+      tmuxCommand: effectiveConfig.tmuxCommand,
+      sessionName: this.buildSessionName(),
+      windowName: DEFAULT_WINDOW_NAME,
+      layout: template.layout,
+      terminals: normalized
+    };
+  }
+
   private getUserConfiguredProfiles(): WorkspaceProfile[] {
     return normalizeProfiles(this.getUserSettingsLayer().profiles ?? []);
   }
@@ -1720,11 +1819,11 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
           await this.actions.onBroadcastCommand(message.payload.command);
         }
         return;
-      case 'applyLiveLayout':
+      case 'applyWorkspaceDraft':
         if (isRecord(message.payload)) {
-          const layout = this.readWorkspaceLayout(message.payload.layout);
-          if (layout) {
-            await this.actions.onApplyLiveLayout(layout);
+          const template = this.readTemplate(message.payload.template);
+          if (template) {
+            await this.actions.onApplyWorkspaceDraft(template);
           }
         }
         return;
@@ -2030,7 +2129,7 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
             '<div class="two-col"><label>Rows<select id="gridRows">' + buildSizeOptions(template.layout.grid.rows) + '</select></label><label>Columns<select id="gridCols">' + buildSizeOptions(template.layout.grid.cols) + '</select></label></div>',
             '<div id="gridEditor" class="grid-editor"></div>',
             '<div class="actions two"><button class="secondary" id="mergeSelection">Merge Selection</button><button class="secondary" id="splitSelection">Split Selected Pane</button></div>',
-            (state.canApplyLiveLayout ? '<button class="secondary" id="applyLiveLayout">Apply Shape Live</button>' : ''),
+            (state.canApplyWorkspaceDraft ? '<button class="secondary" id="applyWorkspaceDraft">' + escapeHtml(state.applyWorkspaceDraftLabel) + '</button>' : ''),
             '<div class="subtle-label">Startup command for all panes</div>',
             '<div class="input-action"><input id="bulkStartup" placeholder="Leave empty for plain shells" /><button class="secondary" id="applyBulkStartup">Apply To All</button></div>',
             '<div class="subtle-label">Send command to all live panes</div>',
@@ -2359,7 +2458,7 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
               '<label>Name<input data-pane="' + index + '" data-field="name" value="' + escapeHtml(pane.name || ('Pane ' + (index + 1))) + '" /></label>',
               '<label>Startup command<input data-pane="' + index + '" data-field="startupCommand" value="' + escapeHtml(pane.startupCommand || '') + '" placeholder="Leave empty for a plain shell" /></label>',
               '<label>Working directory<input data-pane="' + index + '" data-field="cwd" value="' + escapeHtml(pane.cwd || workspaceToken) + '" placeholder="' + workspaceToken + '" /></label>',
-              (state.canApplyLiveLayout && !hiddenPaneIndexes.has(index) ? '<button class="secondary" data-hide-pane="' + index + '">Hide Now</button>' : ''),
+              (state.canUseLivePaneActions && !hiddenPaneIndexes.has(index) ? '<button class="secondary" data-hide-pane="' + index + '">Hide Now</button>' : ''),
             '</div>'
           ].join('')).join('');
 
@@ -2510,10 +2609,10 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
           vscode.postMessage({ type: 'broadcastCommand', payload: { command } });
         });
 
-        const liveLayoutButton = document.getElementById('applyLiveLayout');
+        const liveLayoutButton = document.getElementById('applyWorkspaceDraft');
         if (liveLayoutButton) {
           liveLayoutButton.addEventListener('click', () => {
-            vscode.postMessage({ type: 'applyLiveLayout', payload: { layout: template.layout } });
+            vscode.postMessage({ type: 'applyWorkspaceDraft', payload: { template: currentPayload().template } });
           });
         }
 
