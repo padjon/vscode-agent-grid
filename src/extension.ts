@@ -4,11 +4,17 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 import {
+  buildPresetGridLayout,
   buildSupportBundleMarkdown,
+  buildTmuxLayoutPlan,
   buildTmuxBootstrapScript,
+  describeWorkspaceLayout,
+  getLayoutPaneCount,
   mergeProfiles,
+  normalizeGridLayout,
   normalizeProfiles,
   normalizeTerminalDefinitions,
+  normalizeWorkspaceLayout,
   parseRepoConfig,
   readLayoutName,
   resolveEffectiveWorkspaceConfig,
@@ -16,12 +22,15 @@ import {
 } from './core';
 import type {
   EffectiveConfigLayers,
-  LayoutName,
+  GridLayout,
+  PresetLayoutName,
   RepoConfig,
   SettingsLayerConfig,
   SupportBundleLivePane,
   SupportBundlePane,
   TerminalDefinition,
+  TmuxLayoutPlan,
+  WorkspaceLayout,
   WorkspaceProfile,
   WorkspaceSession
 } from './core';
@@ -68,7 +77,7 @@ interface WorkspaceProjectInfo {
 }
 
 interface ConfigurationTemplate {
-  layout: LayoutName;
+  layout: WorkspaceLayout;
   terminals: TerminalDefinition[];
 }
 
@@ -97,6 +106,7 @@ interface ActiveSetupModel {
 
 interface HiddenPaneInfo {
   windowName: string;
+  paneIndex?: number;
   title: string;
   currentCommand: string;
 }
@@ -142,7 +152,7 @@ interface AgentGridSidebarActions {
   ) => Promise<void>;
   onDeleteProfile: (profileName: string) => Promise<void>;
   onBroadcastCommand: (command: string) => Promise<void>;
-  onApplyLiveLayout: (layout: LayoutName) => Promise<void>;
+  onApplyLiveLayout: (layout: WorkspaceLayout) => Promise<void>;
   onHideLivePane: (paneIndex: number) => Promise<void>;
   onRestoreHiddenPane: (windowName: string) => Promise<void>;
   onRunDiagnostics: () => Promise<void>;
@@ -237,7 +247,7 @@ class AgentGridController implements vscode.Disposable {
         await this.emailFeedback();
       }),
       vscode.window.onDidCloseTerminal((terminal) => {
-        if (terminal.name === TERMINAL_TITLE && !this.findExistingTerminal()) {
+        if (terminal.name === TERMINAL_TITLE && this.listAgentGridTerminals().length === 0) {
           void this.context.workspaceState.update(SESSION_STATE_KEY, false);
         }
         void this.refreshSurface();
@@ -371,7 +381,7 @@ class AgentGridController implements vscode.Disposable {
         ...effectiveConfig.profiles.map((profile) => ({
           id: this.buildProfileSetupId(profile.name),
           label: profile.name,
-          description: `${profile.terminals.length} panes • ${profile.layout}`
+          description: `${profile.terminals.length} panes • ${describeWorkspaceLayout(profile.layout)}`
         }))
       ],
       selectedStorage: activeSetup.storage,
@@ -401,7 +411,10 @@ class AgentGridController implements vscode.Disposable {
         label: 'Custom',
         description: 'Start from a plain editable grid.',
         template: {
-          layout: 'tiled',
+          layout: {
+            kind: 'grid',
+            grid: buildPresetGridLayout('tiled', 4)
+          },
           terminals: normalizeTerminalDefinitions([])
         }
       },
@@ -434,7 +447,10 @@ class AgentGridController implements vscode.Disposable {
         label: `${this.getAgentLabel(command)} Starter`,
         description: `Start from a ${this.getAgentLabel(command)}-focused grid.`,
         template: {
-          layout: 'main-horizontal',
+          layout: {
+            kind: 'grid',
+            grid: buildPresetGridLayout('main-horizontal', 3)
+          },
           terminals: [
             { name: this.getAgentLabel(command), startupCommand: command, cwd: '${workspaceFolder}' },
             { name: 'Shell', startupCommand: '', cwd: '${workspaceFolder}' },
@@ -477,7 +493,10 @@ class AgentGridController implements vscode.Disposable {
       label: 'Detected Agents',
       description: `Detected here: ${ordered.join(', ')}`,
       template: {
-        layout: 'tiled',
+        layout: {
+          kind: 'grid',
+          grid: buildPresetGridLayout('tiled', terminals.length)
+        },
         terminals
       }
     };
@@ -545,7 +564,10 @@ class AgentGridController implements vscode.Disposable {
         description: `Editing the "${activeProfile.name}" profile. This is the active setup used when you create the workspace.`,
         profileName: activeProfile.name,
         template: {
-          layout: activeProfile.layout,
+          layout: {
+            kind: 'grid',
+            grid: structuredClone(activeProfile.layout.grid)
+          },
           terminals: activeProfile.terminals
         },
         storage: source === 'repo' ? 'repo' : 'user'
@@ -558,7 +580,10 @@ class AgentGridController implements vscode.Disposable {
       label: 'Default Setup',
       description: `Editing the default setup. This is the active setup used when you create the workspace. ${this.describeDefaultSetupSource(effectiveConfig.layers)}`,
       template: {
-        layout: effectiveConfig.layout,
+        layout: {
+          kind: 'grid',
+          grid: structuredClone(effectiveConfig.layout.grid)
+        },
         terminals: effectiveConfig.terminals
       },
       storage: effectiveConfig.layers.layout === 'repo' || effectiveConfig.layers.terminals === 'repo' ? 'repo' : 'user'
@@ -673,14 +698,16 @@ class AgentGridController implements vscode.Disposable {
 
       await this.writeRepoConfig({
         ...writable.config,
-        layout: template.layout,
+        layout: template.layout.kind === 'preset' ? template.layout.preset : undefined,
+        grid: structuredClone(template.layout.grid),
         terminals: normalizeTerminalDefinitions(template.terminals)
       });
       return;
     }
 
     await this.updateUserDefaults({
-      layout: template.layout,
+      layout: template.layout.kind === 'preset' ? template.layout.preset : undefined,
+      grid: structuredClone(template.layout.grid),
       terminals: normalizeTerminalDefinitions(template.terminals)
     });
   }
@@ -692,7 +719,10 @@ class AgentGridController implements vscode.Disposable {
   ): Promise<void> {
     const profile: WorkspaceProfile = {
       name: profileName,
-      layout: template.layout,
+      layout:
+        template.layout.kind === 'preset'
+          ? { kind: 'preset', preset: template.layout.preset, grid: structuredClone(template.layout.grid) }
+          : { kind: 'grid', grid: structuredClone(template.layout.grid) },
       terminals: normalizeTerminalDefinitions(template.terminals)
     };
 
@@ -732,7 +762,15 @@ class AgentGridController implements vscode.Disposable {
     }
 
     const existingTerminal = this.findExistingTerminal();
+    const previousEditor = captureEditorState(vscode.window.activeTextEditor);
+    let previousTerminal = vscode.window.activeTerminal;
     let recreate = false;
+
+    if (reason === 'restore' && existingTerminal) {
+      await this.context.workspaceState.update(SESSION_STATE_KEY, true);
+      await this.refreshSurface(environment);
+      return;
+    }
 
     if (reason === 'manual' && existingTerminal) {
       const action = await vscode.window.showInformationMessage(
@@ -755,6 +793,9 @@ class AgentGridController implements vscode.Disposable {
 
       recreate = true;
       await this.disposeTerminal(existingTerminal);
+      if (previousTerminal === existingTerminal) {
+        previousTerminal = undefined;
+      }
     } else if (reason === 'manual' && (await this.hasDetachedTmuxSession(session))) {
       const action = await vscode.window.showInformationMessage(
         'The Agent Grid workspace is still running in tmux.',
@@ -770,8 +811,6 @@ class AgentGridController implements vscode.Disposable {
       recreate = action === 'Recreate';
     }
 
-    const previousTerminal = vscode.window.activeTerminal;
-    const previousEditor = captureEditorState(vscode.window.activeTextEditor);
     const terminal = this.createTerminal();
     await this.revealAndPinTerminal(terminal, previousEditor, previousTerminal);
     terminal.sendText(this.buildBootstrapCommand(session, recreate), true);
@@ -800,15 +839,6 @@ class AgentGridController implements vscode.Disposable {
     terminal.show(false);
     await this.waitForActiveTerminal(terminal);
     await this.pinActiveEditor();
-
-    if (previousEditor) {
-      await vscode.window.showTextDocument(previousEditor.document, {
-        viewColumn: previousEditor.viewColumn,
-        preserveFocus: false,
-        selection: previousEditor.selection
-      });
-    }
-
     await this.restoreTerminalCreationContext(previousEditor, previousTerminal, terminal);
   }
 
@@ -820,7 +850,24 @@ class AgentGridController implements vscode.Disposable {
     createdTerminal: vscode.Terminal
   ): Promise<void> {
     if (previousTerminal && previousTerminal !== createdTerminal) {
-      previousTerminal.show(true);
+      if (this.tryShowTerminal(previousTerminal, true)) {
+        if (previousEditor) {
+          await vscode.window.showTextDocument(previousEditor.document, {
+            viewColumn: previousEditor.viewColumn,
+            preserveFocus: true,
+            selection: previousEditor.selection
+          });
+        }
+        return;
+      }
+
+      if (previousEditor) {
+        await vscode.window.showTextDocument(previousEditor.document, {
+          viewColumn: previousEditor.viewColumn,
+          preserveFocus: true,
+          selection: previousEditor.selection
+        });
+      }
       return;
     }
 
@@ -835,20 +882,40 @@ class AgentGridController implements vscode.Disposable {
     try {
       await vscode.commands.executeCommand('workbench.action.terminal.focus');
     } catch {
+      if (previousEditor) {
+        await vscode.window.showTextDocument(previousEditor.document, {
+          viewColumn: previousEditor.viewColumn,
+          preserveFocus: false,
+          selection: previousEditor.selection
+        });
+      }
       return;
     }
 
     if (previousEditor) {
       await vscode.window.showTextDocument(previousEditor.document, {
         viewColumn: previousEditor.viewColumn,
-        preserveFocus: false,
+        preserveFocus: true,
         selection: previousEditor.selection
       });
     }
   }
 
   private findExistingTerminal(): vscode.Terminal | undefined {
-    return vscode.window.terminals.find((terminal) => terminal.name === TERMINAL_TITLE);
+    return this.listAgentGridTerminals()[0];
+  }
+
+  private listAgentGridTerminals(): vscode.Terminal[] {
+    return vscode.window.terminals.filter((terminal) => terminal.name === TERMINAL_TITLE);
+  }
+
+  private tryShowTerminal(terminal: vscode.Terminal, preserveFocus: boolean): boolean {
+    try {
+      terminal.show(preserveFocus);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async disposeTerminal(terminal: vscode.Terminal): Promise<void> {
@@ -1009,6 +1076,32 @@ class AgentGridController implements vscode.Disposable {
       .filter((pane) => Number.isInteger(pane.index));
   }
 
+  private async listVisiblePaneDetails(
+    session: WorkspaceSession
+  ): Promise<Array<{ index: number; active: boolean; paneId: string }>> {
+    const output = await this.execTmux(session, [
+      'list-panes',
+      '-t',
+      `${session.sessionName}:${session.windowName}`,
+      '-F',
+      '#{pane_index}\t#{pane_active}\t#{pane_id}'
+    ]);
+
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [indexText = '', activeText = '0', paneId = ''] = line.split('\t');
+        return {
+          index: Number(indexText),
+          active: activeText === '1',
+          paneId
+        };
+      })
+      .filter((pane) => Number.isInteger(pane.index) && pane.paneId);
+  }
+
   private async listLivePanes(session: WorkspaceSession): Promise<SupportBundleLivePane[]> {
     try {
       const output = await this.execTmux(session, [
@@ -1049,6 +1142,7 @@ class AgentGridController implements vscode.Disposable {
 
       const hiddenPanes: HiddenPaneInfo[] = [];
       for (const windowName of hiddenWindows) {
+        const paneIndex = this.parseHiddenPaneIndex(windowName);
         const pane = await this.execTmux(session, [
           'list-panes',
           '-t',
@@ -1057,7 +1151,7 @@ class AgentGridController implements vscode.Disposable {
           '#{pane_title}\t#{pane_current_command}'
         ]);
         const [title = windowName, currentCommand = ''] = pane.split('\t');
-        hiddenPanes.push({ windowName, title, currentCommand });
+        hiddenPanes.push({ windowName, paneIndex, title, currentCommand });
       }
 
       return hiddenPanes;
@@ -1066,18 +1160,17 @@ class AgentGridController implements vscode.Disposable {
     }
   }
 
-  private async applyLiveLayout(layout: LayoutName): Promise<void> {
+  private async applyLiveLayout(layout: WorkspaceLayout): Promise<void> {
     await this.runPaneMutation(async (session) => {
-      await this.execTmux(session, ['select-layout', '-t', `${session.sessionName}:${session.windowName}`, layout]);
+      await this.applyLayoutToRunningSession(session, layout);
     });
   }
 
   private async hideLivePane(paneIndex: number): Promise<void> {
     await this.runPaneMutation(async (session) => {
       const target = `${session.sessionName}:${session.windowName}.${paneIndex}`;
-      const hiddenWindowName = `${HIDDEN_WINDOW_PREFIX}-${Date.now()}`;
+      const hiddenWindowName = `${HIDDEN_WINDOW_PREFIX}-${paneIndex}-${Date.now()}`;
       await this.execTmux(session, ['break-pane', '-d', '-t', target, '-n', hiddenWindowName]);
-      await this.execTmux(session, ['select-layout', '-t', `${session.sessionName}:${session.windowName}`, this.getSessionFromSettings().layout]);
     });
   }
 
@@ -1091,8 +1184,82 @@ class AgentGridController implements vscode.Disposable {
         `${session.sessionName}:${session.windowName}`
       ]);
       await this.execTmux(session, ['kill-window', '-t', `${session.sessionName}:${windowName}`]);
-      await this.execTmux(session, ['select-layout', '-t', `${session.sessionName}:${session.windowName}`, this.getSessionFromSettings().layout]);
+      const targetLayout = this.getSessionFromSettings().layout;
+      if ((await this.listVisiblePaneDetails(session)).length === getLayoutPaneCount(targetLayout)) {
+        await this.applyLayoutToRunningSession(session, targetLayout);
+      }
     });
+  }
+
+  private async applyLayoutToRunningSession(session: WorkspaceSession, layout: WorkspaceLayout): Promise<void> {
+    const visiblePanes = await this.listVisiblePaneDetails(session);
+    const desiredPaneCount = getLayoutPaneCount(layout);
+
+    if (visiblePanes.length !== desiredPaneCount) {
+      throw new Error(
+        `Live layout changes currently require the same number of visible panes. Visible: ${visiblePanes.length}, target: ${desiredPaneCount}. Save and recreate the workspace for pane-count changes.`
+      );
+    }
+
+    const plan = buildTmuxLayoutPlan(layout);
+    const anchorPane = visiblePanes[0];
+    if (!anchorPane) {
+      throw new Error('No visible tmux pane was found for the current Agent Grid session.');
+    }
+
+    const detachedWindows: Array<{ paneId: string; windowName: string }> = [];
+    for (let index = 1; index < visiblePanes.length; index += 1) {
+      const pane = visiblePanes[index];
+      const windowName = `${HIDDEN_WINDOW_PREFIX}-reflow-${Date.now()}-${index}`;
+      await this.execTmux(session, ['break-pane', '-d', '-s', pane.paneId, '-n', windowName]);
+      detachedWindows.push({ paneId: pane.paneId, windowName });
+    }
+
+    const paneTargets = await this.buildLiveLayoutFromPlan(session, plan, anchorPane.paneId);
+    for (let index = 1; index < paneTargets.length; index += 1) {
+      const detached = detachedWindows[index - 1];
+      const targetPaneId = paneTargets[index];
+      await this.execTmux(session, ['swap-pane', '-s', detached.paneId, '-t', targetPaneId]);
+      await this.execTmux(session, ['kill-window', '-t', `${session.sessionName}:${detached.windowName}`]);
+    }
+  }
+
+  private async buildLiveLayoutFromPlan(
+    session: WorkspaceSession,
+    plan: TmuxLayoutPlan,
+    paneId: string
+  ): Promise<string[]> {
+    if (plan.kind === 'leaf') {
+      return [paneId];
+    }
+
+    const splitFlag = plan.axis === 'vertical' ? '-h' : '-v';
+    const secondPercent = Math.max(1, Math.round((100 * plan.secondSpan) / (plan.firstSpan + plan.secondSpan)));
+    const newPaneId = await this.execTmux(session, [
+      'split-window',
+      '-P',
+      '-F',
+      '#{pane_id}',
+      splitFlag,
+      '-l',
+      `${secondPercent}%`,
+      '-t',
+      paneId
+    ]);
+
+    const firstOrder = await this.buildLiveLayoutFromPlan(session, plan.first, paneId);
+    const secondOrder = await this.buildLiveLayoutFromPlan(session, plan.second, newPaneId);
+    return [...firstOrder, ...secondOrder];
+  }
+
+  private parseHiddenPaneIndex(windowName: string): number | undefined {
+    const match = windowName.match(new RegExp(`^${HIDDEN_WINDOW_PREFIX}-(\\d+)-\\d+$`));
+    if (!match) {
+      return undefined;
+    }
+
+    const paneIndex = Number(match[1]);
+    return Number.isInteger(paneIndex) ? paneIndex : undefined;
   }
 
   private async broadcastCommand(initialCommand?: string): Promise<void> {
@@ -1176,7 +1343,7 @@ class AgentGridController implements vscode.Disposable {
       `tmux version: ${tmuxVersion}`,
       `Environment state: ${environment.state}`,
       `Environment detail: ${environment.detail}`,
-      `Configured layout: ${session.layout}`,
+      `Configured layout: ${describeWorkspaceLayout(session.layout)}`,
       `Configured panes: ${session.terminals.length}`,
       `Active setup source: ${this.describeDefaultSetupSource(effectiveConfig.layers)}`,
       `Terminal open: ${terminalOpen ? 'yes' : 'no'}`,
@@ -1233,7 +1400,7 @@ class AgentGridController implements vscode.Disposable {
       terminalOpen,
       detachedTmuxSession: detached,
       effectiveTmuxCommand: session.tmuxCommand,
-      effectiveLayout: session.layout,
+      effectiveLayout: describeWorkspaceLayout(session.layout),
       effectivePanes: panes,
       effectiveConfigSource: this.describeDefaultSetupSource(effectiveConfig.layers),
       activeSetup: this.getActiveSetupModel(effectiveConfig, repoConfig).label,
@@ -1393,6 +1560,7 @@ class AgentGridController implements vscode.Disposable {
     return {
       tmuxCommand: this.readWorkspaceOverride<string>(config.inspect<string>('tmuxCommand')),
       layout: this.readWorkspaceOverride<string>(config.inspect<string>('layout')),
+      grid: this.readWorkspaceOverride<unknown>(config.inspect<unknown>('grid')),
       terminals: this.readWorkspaceOverride<unknown[]>(config.inspect<unknown[]>('terminals')),
       profiles: this.readWorkspaceOverride<unknown[]>(config.inspect<unknown[]>('profiles'))
     };
@@ -1403,6 +1571,7 @@ class AgentGridController implements vscode.Disposable {
     return {
       tmuxCommand: this.readUserSetting<string>(config.inspect<string>('tmuxCommand')),
       layout: this.readUserSetting<string>(config.inspect<string>('layout')),
+      grid: this.readUserSetting<unknown>(config.inspect<unknown>('grid')),
       terminals: this.readUserSetting<unknown[]>(config.inspect<unknown[]>('terminals')),
       profiles: this.readUserSetting<unknown[]>(config.inspect<unknown[]>('profiles'))
     };
@@ -1456,7 +1625,7 @@ class AgentGridController implements vscode.Disposable {
   }
 
   private async updateUserDefaults(
-    values: Partial<Record<'tmuxCommand' | 'layout' | 'terminals' | 'profiles', unknown>>
+    values: Partial<Record<'tmuxCommand' | 'layout' | 'grid' | 'terminals' | 'profiles', unknown>>
   ): Promise<void> {
     const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
     if ('tmuxCommand' in values) {
@@ -1464,6 +1633,9 @@ class AgentGridController implements vscode.Disposable {
     }
     if ('layout' in values) {
       await config.update('layout', values.layout, vscode.ConfigurationTarget.Global);
+    }
+    if ('grid' in values) {
+      await config.update('grid', values.grid, vscode.ConfigurationTarget.Global);
     }
     if ('terminals' in values) {
       await config.update('terminals', values.terminals, vscode.ConfigurationTarget.Global);
@@ -1550,7 +1722,7 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
         return;
       case 'applyLiveLayout':
         if (isRecord(message.payload)) {
-          const layout = readLayoutName(message.payload.layout);
+          const layout = this.readWorkspaceLayout(message.payload.layout);
           if (layout) {
             await this.actions.onApplyLiveLayout(layout);
           }
@@ -1595,13 +1767,35 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
       return undefined;
     }
 
-    const layout = readLayoutName(value.layout);
+    const layout = this.readWorkspaceLayout(value.layout);
     const terminals = normalizeTerminalDefinitions(Array.isArray(value.terminals) ? value.terminals : []);
     if (!layout || terminals.length === 0) {
       return undefined;
     }
 
     return { layout, terminals };
+  }
+
+  private readWorkspaceLayout(value: unknown): WorkspaceLayout | undefined {
+    if (isRecord(value) && value.kind === 'grid') {
+      const grid = normalizeGridLayout(value.grid);
+      if (grid) {
+        return {
+          kind: 'grid',
+          grid
+        };
+      }
+    }
+
+    if (isRecord(value) && value.kind === 'preset') {
+      const preset = readLayoutName(value.preset);
+      if (preset) {
+        return normalizeWorkspaceLayout(preset, value.grid, Array.isArray(value.terminals) ? value.terminals.length : 4);
+      }
+    }
+
+    const preset = readLayoutName(value);
+    return preset ? normalizeWorkspaceLayout(preset, undefined, 4) : undefined;
   }
 
   private postState(): void {
@@ -1628,7 +1822,8 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
         color-scheme: light dark;
         --border: var(--vscode-editorWidget-border, rgba(127,127,127,0.35));
         --muted: var(--vscode-descriptionForeground);
-        --bg-subtle: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-button-background) 12%);
+        --surface: color-mix(in srgb, var(--vscode-sideBar-background) 88%, var(--vscode-editor-background) 12%);
+        --surface-strong: color-mix(in srgb, var(--vscode-editor-background) 84%, var(--vscode-sideBar-background) 16%);
       }
       body {
         font-family: var(--vscode-font-family);
@@ -1640,9 +1835,9 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
       .stack { display: grid; gap: 14px; }
       .card {
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: 12px;
         padding: 12px;
-        background: var(--bg-subtle);
+        background: transparent;
       }
       .status { display: grid; gap: 8px; }
       .status-badge {
@@ -1703,117 +1898,78 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
         letter-spacing: 0.04em;
         color: var(--muted);
       }
-      .layout-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
+      .starter-row, .footer-links {
+        display: flex;
+        flex-wrap: wrap;
         gap: 8px;
       }
-      .grid-preview-shell {
-        display: grid;
-        gap: 8px;
-      }
-      .grid-preview {
-        display: grid;
-        gap: 6px;
-        min-height: 146px;
-      }
-      .grid-preview.layout-tiled {
-        grid-template-columns: 1fr 1fr;
-      }
-      .grid-preview.layout-even-vertical {
-        grid-auto-flow: column;
-        grid-auto-columns: 1fr;
-      }
-      .grid-preview.layout-even-horizontal {
-        grid-template-columns: 1fr;
-      }
-      .grid-preview.layout-main-horizontal {
-        grid-template-columns: 1fr 1fr;
-      }
-      .grid-preview.layout-main-horizontal .preview-pane[data-index="0"] {
-        grid-column: 1 / -1;
-        min-height: 54px;
-      }
-      .grid-preview.layout-main-vertical {
-        grid-template-columns: 1.2fr 0.8fr;
-      }
-      .grid-preview.layout-main-vertical .preview-pane[data-index="0"] {
-        grid-row: 1 / span 3;
-        min-height: 132px;
-      }
-      .preview-pane {
-        min-height: 38px;
-        border-radius: 10px;
-        border: 1px solid var(--border);
-        background: color-mix(in srgb, var(--vscode-editor-background) 82%, var(--vscode-button-background) 18%);
-        display: grid;
-        align-content: center;
-        padding: 10px;
-        gap: 4px;
-      }
-      .preview-pane strong {
-        font-size: 12px;
-        font-weight: 700;
-      }
-      .preview-pane span {
-        font-size: 11px;
-        color: var(--muted);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .preview-pane.hidden {
-        border-style: dashed;
-        opacity: 0.72;
+      .starter-pill {
+        border-radius: 999px;
         background: transparent;
-      }
-      .layout-option {
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 8px;
-        background: transparent;
-        text-align: left;
         color: var(--vscode-foreground);
       }
-      .layout-option.active {
-        border-color: var(--vscode-focusBorder);
-        background: color-mix(in srgb, var(--vscode-button-background) 18%, transparent);
-      }
-      .layout-preview {
+      .grid-editor {
         display: grid;
-        gap: 3px;
-        margin-bottom: 8px;
+        gap: 6px;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface-strong);
       }
-      .layout-preview span {
-        display: block;
-        height: 8px;
-        border-radius: 3px;
-        background: color-mix(in srgb, var(--vscode-button-background) 35%, var(--vscode-editor-background));
+      .grid-cell {
+        min-height: 44px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        display: grid;
+        place-items: center;
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--vscode-foreground);
+        cursor: pointer;
+        transition: transform 120ms ease, outline-color 120ms ease, opacity 120ms ease;
       }
-      .layout-preview.cols-2 { grid-template-columns: 1fr 1fr; }
-      .layout-preview.cols-3 { grid-template-columns: 1.3fr 1fr 1fr; }
+      .grid-cell:hover {
+        transform: translateY(-1px);
+      }
+      .grid-cell.selected {
+        outline: 2px solid var(--vscode-focusBorder);
+        outline-offset: 1px;
+      }
+      .grid-cell.hidden {
+        opacity: 0.48;
+      }
       .pane-list { display: grid; gap: 10px; }
       .pane-card {
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 10px;
+        border: 0;
+        border-top: 1px solid var(--border);
+        border-radius: 0;
+        padding: 10px 0 0;
         display: grid;
         gap: 8px;
+        background: transparent;
+      }
+      .pane-card:first-child {
+        border-top: 0;
+        padding-top: 0;
       }
       .pane-title { font-size: 12px; font-weight: 600; }
+      .pane-meta { color: var(--muted); font-size: 11px; }
       .actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
       .actions.two { grid-template-columns: 1fr 1fr; }
       .two-col { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
-      .footer-links { display: flex; flex-wrap: wrap; gap: 10px; }
-      .chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
-      .chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        border-radius: 999px;
-        border: 1px solid var(--border);
-        padding: 6px 10px;
-        font-size: 12px;
+      .input-action { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+      .ghost-pane-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+        gap: 8px;
+      }
+      .ghost-pane {
+        border: 1px dashed var(--border);
+        border-radius: 8px;
+        padding: 8px;
+        display: grid;
+        gap: 4px;
+        background: transparent;
       }
       details summary {
         cursor: pointer;
@@ -1862,23 +2018,26 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
             '<div class="muted">' + escapeHtml(state.activeSetupDetail) + '</div>',
           '</div>',
           '<div class="card stack">',
-            '<div class="section-title">Configure Grid</div>',
+            '<div class="section-title">Workspace Setup</div>',
             '<div class="muted">' + escapeHtml(state.activeSetupLabel) + '</div>',
             (state.starterTemplates.length > 0
               ? '<label>Start from<select id="starter"><option value="">Keep current editor</option>' + starterOptions + '</select></label>'
               : ''),
-            '<div class="grid-preview-shell"><div class="subtle-label">Preview</div><div id="gridPreview" class="grid-preview"></div></div>',
-            '<div class="subtle-label">Layout</div>',
-            '<div id="layoutPicker" class="layout-grid"></div>',
-            '<div class="two-col"><label>Pane count<select id="paneCount">' + buildPaneCountOptions(template.terminals.length) + '</select></label>' +
-              (state.canApplyLiveLayout ? '<button class="secondary" id="applyLiveLayout">Apply Layout Live</button>' : '<div></div>') + '</div>',
+            '<div class="subtle-label">Shape starters</div>',
+            '<div id="shapeStarters" class="starter-row"></div>',
+            '<div class="subtle-label">Grid editor</div>',
+            '<div class="muted">Click cells to select them. Merge a rectangle into one pane, or split a merged pane back into smaller panes. Agent Grid supports up to 8 panes.</div>',
+            '<div class="two-col"><label>Rows<select id="gridRows">' + buildSizeOptions(template.layout.grid.rows) + '</select></label><label>Columns<select id="gridCols">' + buildSizeOptions(template.layout.grid.cols) + '</select></label></div>',
+            '<div id="gridEditor" class="grid-editor"></div>',
+            '<div class="actions two"><button class="secondary" id="mergeSelection">Merge Selection</button><button class="secondary" id="splitSelection">Split Selected Pane</button></div>',
+            (state.canApplyLiveLayout ? '<button class="secondary" id="applyLiveLayout">Apply Shape Live</button>' : ''),
             '<div class="subtle-label">Startup command for all panes</div>',
-            '<div class="two-col"><input id="bulkStartup" placeholder="Leave empty for plain shells" /><button class="secondary" id="applyBulkStartup">Apply To All</button></div>',
+            '<div class="input-action"><input id="bulkStartup" placeholder="Leave empty for plain shells" /><button class="secondary" id="applyBulkStartup">Apply To All</button></div>',
             '<div class="subtle-label">Send command to all live panes</div>',
-            '<div class="two-col"><input id="broadcastCommand" placeholder="npm test" /><button class="secondary" id="sendBroadcast">Send Now</button></div>',
+            '<div class="input-action"><input id="broadcastCommand" placeholder="npm test" /><button class="secondary" id="sendBroadcast">Send Now</button></div>',
             '<div id="panes" class="pane-list"></div>',
             (state.hiddenPanes.length > 0
-              ? '<div class="subtle-label">Hidden right now</div><div id="hiddenPanes" class="chip-list"></div>'
+              ? '<div class="subtle-label">Hidden right now</div><div id="hiddenPanes" class="ghost-pane-list"></div>'
               : ''),
             '<div class="actions">',
               '<button id="saveOnly">Save</button>',
@@ -1917,74 +2076,290 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
         const hiddenPanesRoot = document.getElementById('hiddenPanes');
         const activeSetupSelect = document.getElementById('activeSetup');
         const starterSelect = document.getElementById('starter');
-        const gridPreview = document.getElementById('gridPreview');
-        const layoutPicker = document.getElementById('layoutPicker');
-        const paneCountSelect = document.getElementById('paneCount');
+        const shapeStarters = document.getElementById('shapeStarters');
+        const gridEditor = document.getElementById('gridEditor');
+        const gridRows = document.getElementById('gridRows');
+        const gridCols = document.getElementById('gridCols');
         const destinationSelect = document.getElementById('destination');
         const storageDetail = document.getElementById('storageDetail');
         const workspaceToken = "${'${workspaceFolder}'}";
+        const hiddenPaneIndexes = new Set(
+          state.hiddenPanes
+            .map((pane) => pane.paneIndex)
+            .filter((value) => Number.isInteger(value))
+        );
+        let selectedCells = [];
+
+        function buildDefaultPane(index) {
+          return {
+            name: 'Pane ' + (index + 1),
+            startupCommand: '',
+            cwd: workspaceToken
+          };
+        }
+
+        function clonePane(pane, index) {
+          return {
+            name: pane?.name || ('Pane ' + (index + 1)),
+            startupCommand: pane?.startupCommand || '',
+            cwd: pane?.cwd || workspaceToken
+          };
+        }
 
         function ensurePaneCount(count) {
           while (template.terminals.length < count) {
-            template.terminals.push({
-              name: 'Pane ' + (template.terminals.length + 1),
-              startupCommand: '',
-              cwd: workspaceToken
-            });
+            template.terminals.push(buildDefaultPane(template.terminals.length));
           }
-          template.terminals = template.terminals.slice(0, count);
+          template.terminals = template.terminals.slice(0, count).map((pane, index) => clonePane(pane, index));
         }
 
-        function buildLayoutPicker() {
-          const layouts = [
-            { value: 'tiled', label: 'Tiled', preview: '<div class="layout-preview cols-2"><span></span><span></span><span></span><span></span></div>' },
-            { value: 'main-vertical', label: 'Main Vertical', preview: '<div class="layout-preview cols-3"><span></span><span></span><span></span></div>' },
-            { value: 'main-horizontal', label: 'Main Horizontal', preview: '<div class="layout-preview"><span style="height:14px"></span><span></span><span></span></div>' },
-            { value: 'even-vertical', label: 'Even Vertical', preview: '<div class="layout-preview cols-2"><span style="height:18px"></span><span style="height:18px"></span></div>' },
-            { value: 'even-horizontal', label: 'Even Horizontal', preview: '<div class="layout-preview"><span></span><span></span><span></span></div>' }
+        function sortAreas(areas) {
+          return [...areas].sort((left, right) => {
+            if (left.y !== right.y) return left.y - right.y;
+            if (left.x !== right.x) return left.x - right.x;
+            if (left.height !== right.height) return right.height - left.height;
+            return right.width - left.width;
+          });
+        }
+
+        function buildUniformGrid(rows, cols) {
+          const areas = [];
+          for (let y = 0; y < rows; y += 1) {
+            for (let x = 0; x < cols; x += 1) {
+              areas.push({ x, y, width: 1, height: 1 });
+            }
+          }
+          return { rows, cols, areas };
+        }
+
+        function mergeTrailingAreas(areas) {
+          const sorted = sortAreas(areas);
+          for (let index = sorted.length - 1; index > 0; index -= 1) {
+            const first = sorted[index - 1];
+            const second = sorted[index];
+            if (first.y === second.y && first.height === second.height && first.x + first.width === second.x) {
+              const next = [...sorted];
+              next.splice(index - 1, 2, { x: first.x, y: first.y, width: first.width + second.width, height: first.height });
+              return sortAreas(next);
+            }
+            if (first.x === second.x && first.width === second.width && first.y + first.height === second.y) {
+              const next = [...sorted];
+              next.splice(index - 1, 2, { x: first.x, y: first.y, width: first.width, height: first.height + second.height });
+              return sortAreas(next);
+            }
+          }
+          return sorted;
+        }
+
+        function buildPresetGrid(preset, paneCount) {
+          const count = Math.max(1, Math.min(8, paneCount));
+          if (preset === 'even-horizontal') return buildUniformGrid(1, count);
+          if (preset === 'even-vertical') return buildUniformGrid(count, 1);
+          if (preset === 'main-horizontal') {
+            if (count === 1) return buildUniformGrid(1, 1);
+            const cols = Math.max(1, count - 1);
+            const areas = [{ x: 0, y: 0, width: cols, height: 1 }];
+            for (let index = 0; index < count - 1; index += 1) {
+              areas.push({ x: index, y: 1, width: 1, height: 1 });
+            }
+            return { rows: 2, cols, areas };
+          }
+          if (preset === 'main-vertical') {
+            if (count === 1) return buildUniformGrid(1, 1);
+            const rows = Math.max(1, count - 1);
+            const areas = [{ x: 0, y: 0, width: 1, height: rows }];
+            for (let index = 0; index < count - 1; index += 1) {
+              areas.push({ x: 1, y: index, width: 1, height: 1 });
+            }
+            return { rows, cols: 2, areas };
+          }
+          const cols = Math.ceil(Math.sqrt(count));
+          const rows = Math.ceil(count / cols);
+          let areas = buildUniformGrid(rows, cols).areas;
+          while (areas.length > count) {
+            areas = mergeTrailingAreas(areas);
+          }
+          return { rows, cols, areas: sortAreas(areas) };
+        }
+
+        function sameArea(left, right) {
+          return left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height;
+        }
+
+        function overlapArea(left, right) {
+          const width = Math.max(0, Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x));
+          const height = Math.max(0, Math.min(left.y + left.height, right.y + right.height) - Math.max(left.y, right.y));
+          return width * height;
+        }
+
+        function remapTerminals(previousGrid, previousTerminals, nextGrid) {
+          const previousAreas = sortAreas(previousGrid.areas);
+          const nextAreas = sortAreas(nextGrid.areas);
+          const used = new Set();
+          return nextAreas.map((area, index) => {
+            let candidateIndex = previousAreas.findIndex((previousArea, previousIndex) => !used.has(previousIndex) && sameArea(previousArea, area));
+
+            if (candidateIndex < 0) {
+              let bestScore = 0;
+              for (let previousIndex = 0; previousIndex < previousAreas.length; previousIndex += 1) {
+                if (used.has(previousIndex)) {
+                  continue;
+                }
+                const score = overlapArea(previousAreas[previousIndex], area);
+                if (score > bestScore) {
+                  bestScore = score;
+                  candidateIndex = previousIndex;
+                }
+              }
+            }
+
+            if (candidateIndex >= 0) {
+              used.add(candidateIndex);
+              return clonePane(previousTerminals[candidateIndex], index);
+            }
+
+            return buildDefaultPane(index);
+          });
+        }
+
+        function applyGrid(nextGrid) {
+          const normalizedGrid = {
+            rows: nextGrid.rows,
+            cols: nextGrid.cols,
+            areas: sortAreas(nextGrid.areas)
+          };
+          const previousGrid = structuredClone(template.layout.grid);
+          const previousTerminals = structuredClone(template.terminals);
+          template.layout = { kind: 'grid', grid: normalizedGrid };
+          template.terminals = remapTerminals(previousGrid, previousTerminals, normalizedGrid);
+          ensurePaneCount(normalizedGrid.areas.length);
+          gridRows.value = String(normalizedGrid.rows);
+          gridCols.value = String(normalizedGrid.cols);
+          selectedCells = [];
+          renderGridEditor();
+          renderPanes();
+        }
+
+        function applyUniformSize(rows, cols) {
+          if (rows * cols > 8) {
+            window.alert('Agent Grid supports up to 8 panes. Merge cells if you need a larger canvas with fewer active panes.');
+            gridRows.value = String(template.layout.grid.rows);
+            gridCols.value = String(template.layout.grid.cols);
+            return;
+          }
+          applyGrid(buildUniformGrid(rows, cols));
+        }
+
+        function paneAtCell(x, y) {
+          return template.layout.grid.areas.findIndex((area) =>
+            x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height
+          );
+        }
+
+        function colorForPane(index) {
+          const hue = (index * 57) % 360;
+          return 'hsla(' + hue + ', 62%, 52%, 0.22)';
+        }
+
+        function selectedCellObjects() {
+          return selectedCells.map((key) => {
+            const [x, y] = key.split(':').map(Number);
+            return { x, y };
+          });
+        }
+
+        function selectedRectangle() {
+          const cells = selectedCellObjects();
+          if (cells.length === 0) return undefined;
+          const xs = cells.map((cell) => cell.x);
+          const ys = cells.map((cell) => cell.y);
+          const minX = Math.min(...xs);
+          const maxX = Math.max(...xs);
+          const minY = Math.min(...ys);
+          const maxY = Math.max(...ys);
+          if ((maxX - minX + 1) * (maxY - minY + 1) !== cells.length) return undefined;
+          return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+        }
+
+        function canMergeSelection() {
+          const rect = selectedRectangle();
+          if (!rect || selectedCells.length < 2) return false;
+          return template.layout.grid.areas.every((area) => {
+            const overlaps = !(area.x + area.width <= rect.x || area.x >= rect.x + rect.width || area.y + area.height <= rect.y || area.y >= rect.y + rect.height);
+            if (!overlaps) return true;
+            return area.x >= rect.x && area.y >= rect.y && area.x + area.width <= rect.x + rect.width && area.y + area.height <= rect.y + rect.height;
+          });
+        }
+
+        function canSplitSelection() {
+          if (selectedCells.length === 0) return false;
+          const owners = [...new Set(selectedCellObjects().map((cell) => paneAtCell(cell.x, cell.y)))];
+          if (owners.length !== 1 || owners[0] < 0) return false;
+          const area = template.layout.grid.areas[owners[0]];
+          return area.width > 1 || area.height > 1;
+        }
+
+        function renderShapeStarters() {
+          const presets = [
+            { value: 'tiled', label: 'Tiled' },
+            { value: 'main-vertical', label: 'Main Vertical' },
+            { value: 'main-horizontal', label: 'Main Horizontal' },
+            { value: 'even-vertical', label: 'Columns' },
+            { value: 'even-horizontal', label: 'Rows' }
           ];
-
-          layoutPicker.innerHTML = layouts.map((layout) =>
-            '<button class="layout-option' + (template.layout === layout.value ? ' active' : '') + '" data-layout="' + layout.value + '">' +
-              layout.preview +
-              '<div>' + layout.label + '</div>' +
-            '</button>'
+          shapeStarters.innerHTML = presets.map((preset) =>
+            '<button type="button" class="starter-pill secondary" data-shape="' + preset.value + '">' + preset.label + '</button>'
           ).join('');
-
-          layoutPicker.querySelectorAll('[data-layout]').forEach((button) => {
-            button.addEventListener('click', (event) => {
-              event.preventDefault();
-              template.layout = button.dataset.layout;
-              buildLayoutPicker();
-              renderPreview();
+          shapeStarters.querySelectorAll('[data-shape]').forEach((button) => {
+            button.addEventListener('click', () => {
+              applyGrid(buildPresetGrid(button.dataset.shape, template.terminals.length));
             });
           });
         }
 
-        function renderPreview() {
-          const hiddenPanes = state.hiddenPanes || [];
-          gridPreview.className = 'grid-preview layout-' + template.layout;
-          gridPreview.innerHTML = template.terminals.map((pane, index) =>
-            '<div class="preview-pane" data-index="' + index + '">' +
-              '<strong>' + escapeHtml(pane.name || ('Pane ' + (index + 1))) + '</strong>' +
-              '<span>' + escapeHtml((pane.startupCommand || '').trim() || 'Plain shell') + '</span>' +
-            '</div>'
-          ).join('') + hiddenPanes.map((pane) =>
-            '<div class="preview-pane hidden">' +
-              '<strong>' + escapeHtml(pane.title || 'Hidden pane') + '</strong>' +
-              '<span>' + escapeHtml((pane.currentCommand || '').trim() || 'Hidden right now') + '</span>' +
-            '</div>'
-          ).join('');
+        function renderGridEditor() {
+          gridEditor.style.gridTemplateColumns = 'repeat(' + template.layout.grid.cols + ', minmax(0, 1fr))';
+          gridEditor.innerHTML = '';
+          for (let y = 0; y < template.layout.grid.rows; y += 1) {
+            for (let x = 0; x < template.layout.grid.cols; x += 1) {
+              const owner = paneAtCell(x, y);
+              const key = x + ':' + y;
+              const cell = document.createElement('button');
+              cell.type = 'button';
+              const isHidden = hiddenPaneIndexes.has(owner);
+              cell.className = 'grid-cell' + (selectedCells.includes(key) ? ' selected' : '') + (isHidden ? ' hidden' : '');
+              cell.textContent = owner >= 0 ? (isHidden ? 'H' + (owner + 1) : String(owner + 1)) : '';
+              cell.style.background = owner >= 0 ? colorForPane(owner) : 'transparent';
+              cell.title =
+                owner >= 0
+                  ? (template.terminals[owner]?.name || ('Pane ' + (owner + 1))) + (isHidden ? ' (hidden live)' : '')
+                  : 'Empty cell';
+              cell.addEventListener('click', () => {
+                if (selectedCells.includes(key)) {
+                  selectedCells = selectedCells.filter((value) => value !== key);
+                } else {
+                  selectedCells = [...selectedCells, key];
+                }
+                document.getElementById('mergeSelection').disabled = !canMergeSelection();
+                document.getElementById('splitSelection').disabled = !canSplitSelection();
+                renderGridEditor();
+              });
+              gridEditor.appendChild(cell);
+            }
+          }
+          document.getElementById('mergeSelection').disabled = !canMergeSelection();
+          document.getElementById('splitSelection').disabled = !canSplitSelection();
         }
 
         function renderPanes() {
           panesRoot.innerHTML = template.terminals.map((pane, index) => [
             '<div class="pane-card">',
               '<div class="pane-title">Pane ' + (index + 1) + '</div>',
+              '<div class="pane-meta">' + (hiddenPaneIndexes.has(index) ? 'Hidden in the running workspace right now.' : 'Visible in the running workspace.') + '</div>',
               '<label>Name<input data-pane="' + index + '" data-field="name" value="' + escapeHtml(pane.name || ('Pane ' + (index + 1))) + '" /></label>',
               '<label>Startup command<input data-pane="' + index + '" data-field="startupCommand" value="' + escapeHtml(pane.startupCommand || '') + '" placeholder="Leave empty for a plain shell" /></label>',
               '<label>Working directory<input data-pane="' + index + '" data-field="cwd" value="' + escapeHtml(pane.cwd || workspaceToken) + '" placeholder="' + workspaceToken + '" /></label>',
-              (state.canApplyLiveLayout ? '<button class="secondary" data-hide-pane="' + index + '">Hide Now</button>' : ''),
+              (state.canApplyLiveLayout && !hiddenPaneIndexes.has(index) ? '<button class="secondary" data-hide-pane="' + index + '">Hide Now</button>' : ''),
             '</div>'
           ].join('')).join('');
 
@@ -1997,7 +2372,6 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
                 return;
               }
               template.terminals[paneIndex][field] = target.value;
-              renderPreview();
             });
           });
 
@@ -2017,9 +2391,10 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
             return;
           }
           hiddenPanesRoot.innerHTML = state.hiddenPanes.map((pane) =>
-            '<div class="chip">' +
-              '<span>' + escapeHtml(pane.title || 'Hidden pane') + '</span>' +
-              '<button class="linkish" data-restore-window="' + escapeHtml(pane.windowName) + '">Show</button>' +
+            '<div class="ghost-pane">' +
+              '<div>' + escapeHtml(pane.title || 'Hidden pane') + '</div>' +
+              '<div class="muted">' + escapeHtml(pane.currentCommand || 'Plain shell') + '</div>' +
+              '<button class="linkish" data-restore-window="' + escapeHtml(pane.windowName) + '">Show Again</button>' +
             '</div>'
           ).join('');
 
@@ -2034,7 +2409,14 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
           return {
             destination: destinationSelect.value,
             template: {
-              layout: template.layout,
+              layout: {
+                kind: 'grid',
+                grid: {
+                  rows: template.layout.grid.rows,
+                  cols: template.layout.grid.cols,
+                  areas: sortAreas(template.layout.grid.areas)
+                }
+              },
               terminals: template.terminals.map((pane, index) => ({
                 name: (pane.name || ('Pane ' + (index + 1))).trim(),
                 startupCommand: (pane.startupCommand || '').trim(),
@@ -2058,19 +2440,24 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
               starterSelect.value = '';
               return;
             }
-            template.layout = selected.template.layout;
+            template.layout = { kind: 'grid', grid: structuredClone(selected.template.layout.grid) };
             template.terminals = structuredClone(selected.template.terminals);
-            paneCountSelect.value = String(template.terminals.length);
-            buildLayoutPicker();
-            renderPreview();
+            ensurePaneCount(template.layout.grid.areas.length);
+            gridRows.value = String(template.layout.grid.rows);
+            gridCols.value = String(template.layout.grid.cols);
+            selectedCells = [];
+            renderGridEditor();
             renderPanes();
+            starterSelect.value = '';
           });
         }
 
-        paneCountSelect.addEventListener('change', () => {
-          ensurePaneCount(Number(paneCountSelect.value));
-          renderPreview();
-          renderPanes();
+        gridRows.addEventListener('change', () => {
+          applyUniformSize(Number(gridRows.value), Number(gridCols.value));
+        });
+
+        gridCols.addEventListener('change', () => {
+          applyUniformSize(Number(gridRows.value), Number(gridCols.value));
         });
 
         destinationSelect.addEventListener('change', () => {
@@ -2112,7 +2499,6 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
         document.getElementById('applyBulkStartup').addEventListener('click', () => {
           const value = document.getElementById('bulkStartup').value || '';
           template.terminals = template.terminals.map((pane) => ({ ...pane, startupCommand: value }));
-          renderPreview();
           renderPanes();
         });
 
@@ -2131,6 +2517,45 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
           });
         }
 
+        document.getElementById('mergeSelection').addEventListener('click', () => {
+          const rect = selectedRectangle();
+          if (!rect || !canMergeSelection()) {
+            return;
+          }
+
+          const nextAreas = template.layout.grid.areas.filter((area) => {
+            const overlaps = !(area.x + area.width <= rect.x || area.x >= rect.x + rect.width || area.y + area.height <= rect.y || area.y >= rect.y + rect.height);
+            return !overlaps;
+          });
+          nextAreas.push(rect);
+          applyGrid({
+            rows: template.layout.grid.rows,
+            cols: template.layout.grid.cols,
+            areas: nextAreas
+          });
+        });
+
+        document.getElementById('splitSelection').addEventListener('click', () => {
+          if (!canSplitSelection()) {
+            return;
+          }
+
+          const owners = [...new Set(selectedCellObjects().map((cell) => paneAtCell(cell.x, cell.y)))];
+          const owner = owners[0];
+          const targetArea = template.layout.grid.areas[owner];
+          const nextAreas = template.layout.grid.areas.filter((_, index) => index !== owner);
+          for (let y = targetArea.y; y < targetArea.y + targetArea.height; y += 1) {
+            for (let x = targetArea.x; x < targetArea.x + targetArea.width; x += 1) {
+              nextAreas.push({ x, y, width: 1, height: 1 });
+            }
+          }
+          applyGrid({
+            rows: template.layout.grid.rows,
+            cols: template.layout.grid.cols,
+            areas: nextAreas
+          });
+        });
+
         document.getElementById('runDiagnostics').addEventListener('click', () => {
           vscode.postMessage({ type: 'runDiagnostics' });
         });
@@ -2147,14 +2572,14 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
           vscode.postMessage({ type: 'emailFeedback' });
         });
 
-        ensurePaneCount(template.terminals.length);
-        buildLayoutPicker();
-        renderPreview();
+        ensurePaneCount(template.layout.grid.areas.length);
+        renderShapeStarters();
+        renderGridEditor();
         renderPanes();
         renderHiddenPanes();
       }
 
-      function buildPaneCountOptions(selected) {
+      function buildSizeOptions(selected) {
         return [1,2,3,4,5,6].map((count) =>
           '<option value="' + count + '"' + (count === selected ? ' selected' : '') + '>' + count + '</option>'
         ).join('');

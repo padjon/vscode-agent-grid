@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.0
+
+- replaced the old preview-based layout picker with a real grid editor in the sidebar, including rows, columns, merge, split, and shape starters
+- fixed the `even-horizontal` and `even-vertical` preview/apply mismatch so the editor now matches real tmux behavior
+- added better live-pane visualization, including hidden-pane visibility directly in the grid and pane editor
+- flattened the sidebar styling to reduce the nested box-in-box appearance
+- added explicit `agentGrid.grid` and profile-level `grid` schema support for custom shapes, while keeping legacy preset layout strings for compatibility
+- fixed startup restore so Agent Grid does not create duplicate `agent-grid` terminals when one was already restored by VS Code
+- fixed recreate flows so a disposed terminal object is not reused, which removes the `terminal has already been disposed` error
+- refreshed the docs to describe the sidebar-first, grid-first configuration model
+
 ## 1.1.2
 
 - split the extension branding into a multicolor Marketplace icon and a separate one-color transparent sidebar activity-bar icon

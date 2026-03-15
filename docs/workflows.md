@@ -8,7 +8,7 @@ These are good starting points for committed repo configs or saved profiles.
 - second pane: tests
 - third pane: shell
 
-Use the built-in `Solo Dev Workspace` preset.
+Use the built-in `Custom` starter or a detected CLI starter, then shape the grid in the sidebar.
 
 ## Review Mode
 
@@ -26,7 +26,7 @@ Good when one agent inspects diffs while another proposes fixes.
 - pane 3: tests
 - pane 4: ops shell
 
-Use the built-in team preset when your repo has common `frontend` or `backend` folders.
+Start from the detected agents starter when Agent Grid finds multiple installed CLIs, then refine the grid and pane commands in the sidebar.
 
 ## Mixed Agents
 

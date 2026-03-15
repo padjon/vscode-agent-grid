@@ -74,7 +74,8 @@ The command palette is intentionally smaller now. The main entry points are `Age
 - choose the active setup at the top:
   `Default Setup` or a saved profile
 - optionally load a detected starter into the current editor
-- edit pane count, pane names, startup commands, working directories, and layout directly in the sidebar
+- shape the grid directly in the sidebar by choosing rows and columns, then merging or splitting cells
+- edit pane names, startup commands, and working directories directly in the sidebar
 - save the current setup, save it as a new profile, or update/delete the selected profile
 - create or recreate the workspace from that active setup
 
@@ -103,7 +104,16 @@ Example `.agent-grid.json`:
 
 ```json
 {
-  "layout": "tiled",
+  "grid": {
+    "rows": 2,
+    "cols": 3,
+    "areas": [
+      { "x": 0, "y": 0, "width": 2, "height": 1 },
+      { "x": 2, "y": 0, "width": 1, "height": 1 },
+      { "x": 0, "y": 1, "width": 1, "height": 1 },
+      { "x": 1, "y": 1, "width": 2, "height": 1 }
+    ]
+  },
   "terminals": [
     {
       "name": "Claude",
@@ -129,7 +139,16 @@ Example `.agent-grid.json`:
   "profiles": [
     {
       "name": "Review Mode",
-      "layout": "tiled",
+      "grid": {
+        "rows": 2,
+        "cols": 2,
+        "areas": [
+          { "x": 0, "y": 0, "width": 1, "height": 1 },
+          { "x": 1, "y": 0, "width": 1, "height": 1 },
+          { "x": 0, "y": 1, "width": 1, "height": 1 },
+          { "x": 1, "y": 1, "width": 1, "height": 1 }
+        ]
+      },
       "terminals": [
         {
           "name": "Codex",
@@ -183,8 +202,18 @@ That gives users and maintainers one consistent artifact for setup, WSL, tmux, r
 
 ```json
 {
-  "agentGrid.layout": "tiled",
   "agentGrid.tmuxCommand": "tmux",
+  "agentGrid.grid": {
+    "rows": 2,
+    "cols": 3,
+    "areas": [
+      { "x": 0, "y": 0, "width": 2, "height": 1 },
+      { "x": 2, "y": 0, "width": 1, "height": 1 },
+      { "x": 0, "y": 1, "width": 1, "height": 1 },
+      { "x": 1, "y": 1, "width": 1, "height": 1 },
+      { "x": 2, "y": 1, "width": 1, "height": 1 }
+    ]
+  },
   "agentGrid.terminals": [
     {
       "name": "Claude",
@@ -216,17 +245,7 @@ Supported placeholders inside `cwd` and `startupCommand`:
 - `${workspaceFolderBasename}`
 - `${userHome}`
 
-## Layouts
-
-Available values for `agentGrid.layout`:
-
-- `tiled`
-- `even-horizontal`
-- `even-vertical`
-- `main-horizontal`
-- `main-vertical`
-
-`tiled` is the default and produces the familiar `2x2` shape when four panes are configured.
+`agentGrid.layout` still exists as a legacy preset shorthand for older configs, but the sidebar now writes `agentGrid.grid` for custom shapes.
 
 ## Startup Behavior
 
@@ -251,9 +270,8 @@ Starters are only templates for the current editor. Profiles are your saved reus
 
 The editor itself lets you:
 
-- choose a layout visually
+- shape the layout visually with rows, columns, merge, and split
 - see a graphical preview of visible and hidden panes
-- change pane count
 - edit pane names, startup commands, and working directories
 - apply one startup command to all panes
 - save the current setup

@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { buildTmuxBootstrapScript } from '../out/core.js';
+import { buildPresetGridLayout, buildTmuxBootstrapScript } from '../out/core.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -57,7 +57,11 @@ test('generated bootstrap script creates and configures a tmux workspace end-to-
         tmuxCommand: wrapperPath,
         sessionName: 'agent-grid-smoke',
         windowName: 'grid',
-        layout: 'tiled',
+        layout: {
+          kind: 'preset',
+          preset: 'tiled',
+          grid: buildPresetGridLayout('tiled', 2)
+        },
         terminals: [
           { name: 'Claude', startupCommand: `printf pane0 > ${pane0File}`, cwd: tempRoot },
           { name: 'Tests', startupCommand: `printf pane1 > ${pane1File}`, cwd: tempRoot }

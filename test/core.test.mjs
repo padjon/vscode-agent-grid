@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildPresetGridLayout,
   buildSupportBundleMarkdown,
   buildTmuxBootstrapScript,
   describeEffectiveConfigLayers,
   mergeProfiles,
   normalizeProfiles,
   normalizeTerminalDefinitions,
+  normalizeWorkspaceLayout,
   parseRepoConfig,
   redactPathForPublicReport,
   readLayoutName,
@@ -14,13 +16,42 @@ import {
   sanitizeTmuxName
 } from '../out/core.js';
 
-test('buildTmuxBootstrapScript creates panes, layout, and startup commands', () => {
+function presetLayout(preset, paneCount) {
+  return {
+    kind: 'preset',
+    preset,
+    grid: buildPresetGridLayout(preset, paneCount)
+  };
+}
+
+test('buildPresetGridLayout matches tmux even-horizontal and even-vertical semantics', () => {
+  const horizontal = buildPresetGridLayout('even-horizontal', 3);
+  const vertical = buildPresetGridLayout('even-vertical', 3);
+
+  assert.equal(horizontal.rows, 1);
+  assert.equal(horizontal.cols, 3);
+  assert.deepEqual(horizontal.areas, [
+    { x: 0, y: 0, width: 1, height: 1 },
+    { x: 1, y: 0, width: 1, height: 1 },
+    { x: 2, y: 0, width: 1, height: 1 }
+  ]);
+
+  assert.equal(vertical.rows, 3);
+  assert.equal(vertical.cols, 1);
+  assert.deepEqual(vertical.areas, [
+    { x: 0, y: 0, width: 1, height: 1 },
+    { x: 0, y: 1, width: 1, height: 1 },
+    { x: 0, y: 2, width: 1, height: 1 }
+  ]);
+});
+
+test('buildTmuxBootstrapScript creates panes and startup commands from the grid layout', () => {
   const script = buildTmuxBootstrapScript(
     {
       tmuxCommand: 'tmux',
       sessionName: 'agent-grid-demo',
       windowName: 'grid',
-      layout: 'tiled',
+      layout: presetLayout('tiled', 3),
       terminals: [
         { name: 'Claude', startupCommand: 'claude', cwd: '/repo' },
         { name: 'Tests', startupCommand: 'npm test', cwd: '/repo' },
@@ -33,14 +64,15 @@ test('buildTmuxBootstrapScript creates panes, layout, and startup commands', () 
     '/fallback'
   );
 
-  assert.match(script, /'tmux' start-server/);
+  assert.match(script, /TMUX_BIN='tmux'/);
+  assert.match(script, /\$TMUX_BIN start-server/);
   assert.match(script, /kill-session -t 'agent-grid-demo'/);
   assert.match(script, /new-session -d -s 'agent-grid-demo' -n 'grid' -c '\/repo'/);
   assert.equal((script.match(/split-window/g) ?? []).length, 2);
-  assert.match(script, /select-layout -t 'agent-grid-demo':'grid' 'tiled'/);
-  assert.match(script, /select-pane -t 'agent-grid-demo:grid.0' -T 'Claude'/);
-  assert.match(script, /send-keys -t 'agent-grid-demo:grid.1' 'npm test' C-m/);
+  assert.match(script, /select-pane -t "\$pane_0" -T 'Claude'/);
+  assert.match(script, /send-keys -t "\$pane_[0-9]+" 'npm test' C-m/);
   assert.match(script, /attach-session -t 'agent-grid-demo'/);
+  assert.doesNotMatch(script, /select-layout/);
 });
 
 test('buildTmuxBootstrapScript falls back to provided cwd', () => {
@@ -49,7 +81,7 @@ test('buildTmuxBootstrapScript falls back to provided cwd', () => {
       tmuxCommand: 'tmux',
       sessionName: 'agent-grid-demo',
       windowName: 'grid',
-      layout: 'main-vertical',
+      layout: presetLayout('main-vertical', 1),
       terminals: [{ name: 'Shell', startupCommand: '', cwd: undefined }]
     },
     false,
@@ -59,7 +91,6 @@ test('buildTmuxBootstrapScript falls back to provided cwd', () => {
   );
 
   assert.match(script, /new-session -d -s 'agent-grid-demo' -n 'grid' -c '\/fallback'/);
-  assert.match(script, /select-layout -t 'agent-grid-demo':'grid' 'main-vertical'/);
 });
 
 test('readLayoutName accepts supported values only', () => {
@@ -73,10 +104,17 @@ test('sanitizeTmuxName strips unsupported characters', () => {
   assert.equal(sanitizeTmuxName('***'), 'agent-grid');
 });
 
-test('parseRepoConfig normalizes layout, terminals, and profiles', () => {
+test('parseRepoConfig normalizes layout, terminals, profiles, and explicit grids', () => {
   const config = parseRepoConfig(
     JSON.stringify({
-      layout: 'main-horizontal',
+      grid: {
+        rows: 1,
+        cols: 2,
+        areas: [
+          { x: 0, y: 0, width: 1, height: 1 },
+          { x: 1, y: 0, width: 1, height: 1 }
+        ]
+      },
       tmuxCommand: 'tmux',
       terminals: [
         { name: 'Claude', startupCommand: 'claude', cwd: '${workspaceFolder}' },
@@ -92,8 +130,8 @@ test('parseRepoConfig normalizes layout, terminals, and profiles', () => {
     })
   );
 
-  assert.equal(config.layout, 'main-horizontal');
   assert.equal(config.tmuxCommand, 'tmux');
+  assert.equal(config.grid?.rows, 1);
   assert.equal(config.terminals?.length, 2);
   assert.equal(config.profiles?.[0]?.name, 'Review');
   assert.equal(config.profiles?.[0]?.terminals[0]?.name, 'Codex');
@@ -116,26 +154,26 @@ test('mergeProfiles lets settings override repo defaults by name', () => {
     [
       {
         name: 'Daily',
-        layout: 'tiled',
+        layout: presetLayout('tiled', 1),
         terminals: [{ name: 'Claude', startupCommand: 'claude', cwd: '/repo' }]
       }
     ],
     [
       {
         name: 'Daily',
-        layout: 'main-horizontal',
+        layout: presetLayout('main-horizontal', 1),
         terminals: [{ name: 'Codex', startupCommand: 'codex', cwd: '/repo' }]
       },
       {
         name: 'Review',
-        layout: 'tiled',
+        layout: presetLayout('tiled', 1),
         terminals: [{ name: 'Tests', startupCommand: 'npm test', cwd: '/repo' }]
       }
     ]
   );
 
   assert.equal(merged.length, 2);
-  assert.equal(merged[0].layout, 'main-horizontal');
+  assert.equal(merged[0].layout.preset, 'main-horizontal');
   assert.equal(merged[0].terminals[0].name, 'Codex');
   assert.equal(merged[1].name, 'Review');
 });
@@ -161,12 +199,31 @@ test('resolveEffectiveWorkspaceConfig prefers workspace overrides over repo and 
   });
 
   assert.equal(resolved.tmuxCommand, '/repo/tmux');
-  assert.equal(resolved.layout, 'main-horizontal');
+  assert.equal(resolved.layout.kind, 'preset');
+  assert.equal(resolved.layout.preset, 'main-horizontal');
   assert.equal(resolved.terminals[0].name, 'Workspace Pane');
   assert.equal(resolved.profiles.length, 2);
   assert.equal(resolved.layers.tmuxCommand, 'repo');
   assert.equal(resolved.layers.layout, 'workspace');
   assert.equal(describeEffectiveConfigLayers(resolved.layers), 'repo config + workspace overrides');
+});
+
+test('normalizeWorkspaceLayout prefers explicit grid over preset name', () => {
+  const layout = normalizeWorkspaceLayout(
+    'main-horizontal',
+    {
+      rows: 1,
+      cols: 2,
+      areas: [
+        { x: 0, y: 0, width: 1, height: 1 },
+        { x: 1, y: 0, width: 1, height: 1 }
+      ]
+    },
+    2
+  );
+
+  assert.equal(layout.kind, 'grid');
+  assert.equal(layout.grid.cols, 2);
 });
 
 test('redactPathForPublicReport removes absolute local details', () => {
@@ -194,7 +251,7 @@ test('buildSupportBundleMarkdown defaults to safe redaction when requested', () 
     terminalOpen: true,
     detachedTmuxSession: false,
     effectiveTmuxCommand: '/home/alice/.local/bin/tmux',
-    effectiveLayout: 'tiled',
+    effectiveLayout: 'custom 1x2 grid',
     effectivePanes: [{ name: 'Claude', cwd: '/home/alice/project', startupCommand: 'claude' }],
     effectiveConfigSource: 'repo config + workspace overrides',
     activeSetup: 'Profile: Review',

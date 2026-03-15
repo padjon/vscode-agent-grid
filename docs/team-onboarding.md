@@ -5,13 +5,13 @@ Use this flow when you want a repository to ship a shared Agent Grid setup.
 ## Recommended Flow
 
 1. Add a committed `.agent-grid.json` at the repository root.
-2. Put the default team layout in `layout` and `terminals`.
+2. Put the default team setup in `grid` and `terminals`.
 3. Add named `profiles` for distinct workflows like `review`, `release`, or `incident`.
 4. Keep user-specific differences in local `agentGrid.*` workspace settings only when necessary.
 
 ## Suggested Rollout
 
-1. One maintainer creates a layout locally.
+1. One maintainer creates a setup locally in the sidebar.
 2. Open the `Agent Grid` sidebar and configure the `Default Setup` or a profile.
 3. In `Advanced Storage`, switch to `Shared In Repo` and save.
 4. Commit `.agent-grid.json`.
