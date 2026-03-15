@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.2
+
+- split the extension branding into a multicolor Marketplace icon and a separate one-color transparent sidebar activity-bar icon
+- updated the asset render pipeline so `npm run render:assets` renders the Marketplace icon from its dedicated SVG source
+
 ## 1.1.1
 
 - fixed the Agent Grid sidebar contribution to register as a webview, which resolves the `There is no data provider registered` error
