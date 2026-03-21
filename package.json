@@ -2,7 +2,7 @@
   "name": "vscode-agent-grid",
   "displayName": "Agent Grid: AI Terminal Workspace",
   "description": "Run Claude Code, Codex, Gemini CLI, Aider, Goose, and your own commands side by side in a persistent tmux-backed VS Code terminal workspace.",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "publisher": "padjon",
   "author": "Patrick Schäfer",
   "repository": {

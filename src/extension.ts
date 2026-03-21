@@ -58,7 +58,7 @@ const PIN_EDITOR_COMMANDS = ['workbench.action.pinEditor', 'workbench.action.kee
 
 type WorkspaceReason = 'manual' | 'restore';
 type EnvironmentState = 'ready' | 'tmux-missing' | 'native-windows-unsupported';
-type ConfigurationDestination = 'user' | 'repo';
+type ConfigurationDestination = 'user' | 'repo' | 'workspace';
 
 interface EnvironmentInfo {
   state: EnvironmentState;
@@ -118,11 +118,8 @@ interface SidebarState {
   statusDetail: string;
   statusTone: 'idle' | 'running' | 'warning';
   activeSetupId: string;
-  activeSetupLabel: string;
-  activeSetupDetail: string;
   availableSetups: ActiveSetupOption[];
   selectedStorage: ConfigurationDestination;
-  storageDetail: string;
   availableDestinations: Array<{
     value: ConfigurationDestination;
     label: string;
@@ -131,7 +128,6 @@ interface SidebarState {
   }>;
   template: ConfigurationTemplate;
   starterTemplates: SidebarStarterOption[];
-  canUpdateProfile: boolean;
   canDeleteProfile: boolean;
   canApplyWorkspaceDraft: boolean;
   applyWorkspaceDraftLabel: string;
@@ -373,24 +369,31 @@ class AgentGridController implements vscode.Disposable {
             : 'idle'
           : 'warning',
       activeSetupId: activeSetup.id,
-      activeSetupLabel: activeSetup.label,
-      activeSetupDetail: activeSetup.description,
       availableSetups: [
         {
           id: 'default',
           label: 'Default Setup',
-          description: this.describeDefaultSetupSource(effectiveConfig.layers)
+          description: `${effectiveConfig.terminals.length} panes • ${describeWorkspaceLayout(effectiveConfig.layout)} • ${this.describeDefaultSetupSource(effectiveConfig.layers)}`
         },
-        ...effectiveConfig.profiles.map((profile) => ({
-          id: this.buildProfileSetupId(profile.name),
-          label: profile.name,
-          description: `${profile.terminals.length} panes • ${describeWorkspaceLayout(profile.layout)}`
-        }))
+        ...effectiveConfig.profiles.map((profile) => {
+          const storage = this.getProfileStorage(profile.name, repoConfig.config);
+          const storageLabel = storage === 'workspace' ? 'This Workspace' : storage === 'repo' ? 'Shared' : 'Personal';
+          return {
+            id: this.buildProfileSetupId(profile.name),
+            label: profile.name,
+            description: `${profile.terminals.length} panes • ${describeWorkspaceLayout(profile.layout)} • ${storageLabel}`
+          };
+        })
       ],
       selectedStorage: activeSetup.storage,
-      storageDetail: this.getStorageDetail(activeSetup.storage),
       availableDestinations: [
         { value: 'user', label: 'Personal', description: 'Save in your personal Agent Grid settings' },
+        {
+          value: 'workspace',
+          label: 'This Workspace',
+          description: `Save in .vscode/settings.json for this workspace only`,
+          disabled: !vscode.workspace.workspaceFolders?.length
+        },
         {
           value: 'repo',
           label: 'Shared In Repo',
@@ -400,7 +403,6 @@ class AgentGridController implements vscode.Disposable {
       ],
       template: activeSetup.template,
       starterTemplates: this.getStarterTemplates(),
-      canUpdateProfile: activeSetup.kind === 'profile',
       canDeleteProfile: activeSetup.kind === 'profile',
       canApplyWorkspaceDraft: environment.state === 'ready' && Boolean(vscode.workspace.workspaceFolders?.length),
       applyWorkspaceDraftLabel: terminalOpen || detached ? 'Apply To Running Workspace' : 'Open Draft Workspace',
@@ -565,8 +567,8 @@ class AgentGridController implements vscode.Disposable {
       return {
         id: this.buildProfileSetupId(activeProfile.name),
         kind: 'profile',
-        label: `Profile: ${activeProfile.name}`,
-        description: `Editing the "${activeProfile.name}" profile. This is the active setup used when you create the workspace.`,
+        label: activeProfile.name,
+        description: `Profile: ${activeProfile.name}`,
         profileName: activeProfile.name,
         template: {
           layout: {
@@ -575,7 +577,7 @@ class AgentGridController implements vscode.Disposable {
           },
           terminals: activeProfile.terminals
         },
-        storage: source === 'repo' ? 'repo' : 'user'
+        storage: source
       };
     }
 
@@ -583,7 +585,7 @@ class AgentGridController implements vscode.Disposable {
       id: 'default',
       kind: 'default',
       label: 'Default Setup',
-      description: `Editing the default setup. This is the active setup used when you create the workspace. ${this.describeDefaultSetupSource(effectiveConfig.layers)}`,
+      description: 'Default Setup',
       template: {
         layout: {
           kind: 'grid',
@@ -591,11 +593,19 @@ class AgentGridController implements vscode.Disposable {
         },
         terminals: effectiveConfig.terminals
       },
-      storage: effectiveConfig.layers.layout === 'repo' || effectiveConfig.layers.terminals === 'repo' ? 'repo' : 'user'
+      storage:
+        effectiveConfig.layers.layout === 'workspace' || effectiveConfig.layers.terminals === 'workspace'
+          ? 'workspace'
+          : effectiveConfig.layers.layout === 'repo' || effectiveConfig.layers.terminals === 'repo'
+            ? 'repo'
+            : 'user'
     };
   }
 
   private describeDefaultSetupSource(layers: EffectiveConfigLayers): string {
+    if (layers.layout === 'workspace' || layers.terminals === 'workspace') {
+      return 'Currently loaded from workspace settings.';
+    }
     if (layers.layout === 'repo' && layers.terminals === 'repo') {
       return `Currently loaded from ${REPO_CONFIG_FILE}.`;
     }
@@ -606,13 +616,6 @@ class AgentGridController implements vscode.Disposable {
       return 'Currently using the built-in defaults.';
     }
     return `Currently mixed: layout from ${layers.layout}, panes from ${layers.terminals}.`;
-  }
-
-  private getStorageDetail(destination: ConfigurationDestination): string {
-    if (destination === 'repo') {
-      return `Stores Agent Grid setup in ${REPO_CONFIG_FILE} so a team can use the same workspace layout in this repository.`;
-    }
-    return 'Stores the setup in your personal Agent Grid settings and uses it as the base setup across workspaces.';
   }
 
   private buildProfileSetupId(profileName: string): string {
@@ -683,6 +686,10 @@ class AgentGridController implements vscode.Disposable {
         ...writable.config,
         profiles: (writable.config.profiles ?? []).filter((profile) => profile.name !== profileName)
       });
+    } else if (source === 'workspace') {
+      await this.updateWorkspaceSettings({
+        profiles: this.getWorkspaceConfiguredProfiles().filter((profile) => profile.name !== profileName)
+      });
     } else {
       await this.updateUserDefaults({
         profiles: this.getUserConfiguredProfiles().filter((profile) => profile.name !== profileName)
@@ -710,11 +717,18 @@ class AgentGridController implements vscode.Disposable {
       return;
     }
 
-    await this.updateUserDefaults({
+    const values = {
       layout: template.layout.kind === 'preset' ? template.layout.preset : undefined,
       grid: structuredClone(template.layout.grid),
       terminals: normalizeTerminalDefinitions(template.terminals)
-    });
+    };
+
+    if (destination === 'workspace') {
+      await this.updateWorkspaceSettings(values);
+      return;
+    }
+
+    await this.updateUserDefaults(values);
   }
 
   private async saveProfileTemplate(
@@ -741,6 +755,13 @@ class AgentGridController implements vscode.Disposable {
       await this.writeRepoConfig({
         ...writable.config,
         profiles: mergeProfiles(writable.config.profiles ?? [], [profile])
+      });
+      return;
+    }
+
+    if (destination === 'workspace') {
+      await this.updateWorkspaceSettings({
+        profiles: mergeProfiles(this.getWorkspaceConfiguredProfiles(), [profile])
       });
       return;
     }
@@ -848,7 +869,7 @@ class AgentGridController implements vscode.Disposable {
         viewColumn: vscode.ViewColumn.Active,
         preserveFocus: true
       },
-      isTransient: false,
+      isTransient: true,
       iconPath: new vscode.ThemeIcon('terminal')
     });
   }
@@ -1716,7 +1737,16 @@ class AgentGridController implements vscode.Disposable {
     return normalizeProfiles(repoConfig?.profiles ?? []);
   }
 
-  private getProfileStorage(profileName: string, repoConfig: RepoConfig | undefined): 'repo' | 'user' {
+  private getWorkspaceConfiguredProfiles(): WorkspaceProfile[] {
+    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
+    const inspection = config.inspect<unknown[]>('profiles');
+    return normalizeProfiles(inspection?.workspaceFolderValue ?? inspection?.workspaceValue ?? []);
+  }
+
+  private getProfileStorage(profileName: string, repoConfig: RepoConfig | undefined): ConfigurationDestination {
+    if (this.getWorkspaceConfiguredProfiles().some((profile) => profile.name === profileName)) {
+      return 'workspace';
+    }
     if (this.getRepoConfiguredProfiles(repoConfig).some((profile) => profile.name === profileName)) {
       return 'repo';
     }
@@ -1741,6 +1771,24 @@ class AgentGridController implements vscode.Disposable {
     }
     if ('profiles' in values) {
       await config.update('profiles', values.profiles, vscode.ConfigurationTarget.Global);
+    }
+  }
+
+  private async updateWorkspaceSettings(
+    values: Partial<Record<'layout' | 'grid' | 'terminals' | 'profiles', unknown>>
+  ): Promise<void> {
+    const config = vscode.workspace.getConfiguration(EXTENSION_NAMESPACE);
+    if ('layout' in values) {
+      await config.update('layout', values.layout, vscode.ConfigurationTarget.Workspace);
+    }
+    if ('grid' in values) {
+      await config.update('grid', values.grid, vscode.ConfigurationTarget.Workspace);
+    }
+    if ('terminals' in values) {
+      await config.update('terminals', values.terminals, vscode.ConfigurationTarget.Workspace);
+    }
+    if ('profiles' in values) {
+      await config.update('profiles', values.profiles, vscode.ConfigurationTarget.Workspace);
     }
   }
 }
@@ -1858,7 +1906,7 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
   }
 
   private readDestination(value: unknown): ConfigurationDestination | undefined {
-    return value === 'user' || value === 'repo' ? value : undefined;
+    return value === 'user' || value === 'repo' || value === 'workspace' ? value : undefined;
   }
 
   private readTemplate(value: unknown): ConfigurationTemplate | undefined {
@@ -2056,6 +2104,8 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
       .actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
       .actions.two { grid-template-columns: 1fr 1fr; }
       .two-col { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+      .setup-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+      .full-width { width: 100%; }
       .input-action { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
       .ghost-pane-list {
         display: grid;
@@ -2083,10 +2133,14 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
       let state;
+      let showNewSetupForm = false;
+      let pendingNewSetupName = '';
 
       window.addEventListener('message', (event) => {
         if (event.data?.type === 'state') {
           state = event.data.payload;
+          showNewSetupForm = false;
+          pendingNewSetupName = '';
           render();
         }
       });
@@ -2113,12 +2167,24 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
           '<div class="card status">',
             '<div class="status-badge tone-' + escapeHtml(state.statusTone) + '">' + escapeHtml(state.statusLabel) + '</div>',
             '<div class="muted">' + escapeHtml(state.statusDetail) + '</div>',
-            '<label>Active setup<select id="activeSetup">' + setupOptions + '</select></label>',
-            '<div class="muted">' + escapeHtml(state.activeSetupDetail) + '</div>',
+            '<div class="setup-row">',
+              '<label>Setup<select id="activeSetup">' + setupOptions + '</select></label>',
+              '<button class="secondary" id="newSetup">+ New</button>',
+            '</div>',
+            (function() {
+              const sel = state.availableSetups.find(function(s) { return s.id === state.activeSetupId; });
+              return sel ? '<div class="muted">' + escapeHtml(sel.description) + '</div>' : '';
+            }()),
+            '<div id="newSetupForm" style="display:' + (showNewSetupForm ? '' : 'none') + '">',
+              '<label>Name<input id="newSetupName" placeholder="My Workspace Setup" value="' + escapeHtml(pendingNewSetupName) + '" /></label>',
+              '<div class="actions two">',
+                '<button id="confirmNewSetup">Create</button>',
+                '<button class="secondary" id="cancelNewSetup">Cancel</button>',
+              '</div>',
+            '</div>',
           '</div>',
           '<div class="card stack">',
             '<div class="section-title">Workspace Setup</div>',
-            '<div class="muted">' + escapeHtml(state.activeSetupLabel) + '</div>',
             (state.starterTemplates.length > 0
               ? '<label>Start from<select id="starter"><option value="">Keep current editor</option>' + starterOptions + '</select></label>'
               : ''),
@@ -2138,24 +2204,13 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
             (state.hiddenPanes.length > 0
               ? '<div class="subtle-label">Hidden right now</div><div id="hiddenPanes" class="ghost-pane-list"></div>'
               : ''),
-            '<div class="actions">',
-              '<button id="saveOnly">Save</button>',
-              '<button id="saveAsProfile">Save As New Profile</button>',
-              '<button id="saveAndCreate"' + (state.hasWorkspaceFolder ? '' : ' disabled') + '>Save + Create</button>',
-            '</div>',
+            '<div class="subtle-label">Save</div>',
+            '<label>Save to<select id="destination">' + storageOptions + '</select></label>',
             '<div class="actions two">',
-              '<button class="secondary" id="updateProfile"' + (state.canUpdateProfile ? '' : ' disabled') + '>Update Profile</button>',
-              '<button class="secondary" id="deleteProfile"' + (state.canDeleteProfile ? '' : ' disabled') + '>Delete Profile</button>',
+              '<button id="saveOnly">Save</button>',
+              '<button id="saveAndCreate"' + (state.hasWorkspaceFolder ? '' : ' disabled') + '>Save + Open</button>',
             '</div>',
-          '</div>',
-          '<div class="card stack">',
-            '<details>',
-              '<summary title="Stores Agent Grid setup in .agent-grid.json so a team can use the same workspace layout in this repository.">Advanced Storage</summary>',
-              '<div class="stack" style="margin-top:10px;">',
-                '<label>Save location<select id="destination">' + storageOptions + '</select></label>',
-                '<div id="storageDetail" class="muted">' + escapeHtml(state.storageDetail) + '</div>',
-              '</div>',
-            '</details>',
+            (state.canDeleteProfile ? '<button class="secondary full-width" id="deleteProfile">Delete Setup</button>' : ''),
           '</div>',
           '<div class="card stack">',
             '<div class="section-title">Support</div>',
@@ -2180,7 +2235,6 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
         const gridRows = document.getElementById('gridRows');
         const gridCols = document.getElementById('gridCols');
         const destinationSelect = document.getElementById('destination');
-        const storageDetail = document.getElementById('storageDetail');
         const workspaceToken = "${'${workspaceFolder}'}";
         const hiddenPaneIndexes = new Set(
           state.hiddenPanes
@@ -2559,9 +2613,29 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
           applyUniformSize(Number(gridRows.value), Number(gridCols.value));
         });
 
-        destinationSelect.addEventListener('change', () => {
-          const selected = state.availableDestinations.find((item) => item.value === destinationSelect.value);
-          storageDetail.textContent = selected ? selected.description : '';
+        document.getElementById('newSetup').addEventListener('click', () => {
+          showNewSetupForm = true;
+          const form = document.getElementById('newSetupForm');
+          if (form) {
+            form.style.display = '';
+            const nameInput = document.getElementById('newSetupName');
+            if (nameInput) nameInput.focus();
+          }
+        });
+
+        document.getElementById('confirmNewSetup').addEventListener('click', () => {
+          const nameInput = document.getElementById('newSetupName');
+          const profileName = (nameInput ? nameInput.value : '').trim();
+          if (!profileName) return;
+          pendingNewSetupName = profileName;
+          vscode.postMessage({ type: 'saveAsNewProfile', payload: { profileName, ...currentPayload(), createWorkspace: false } });
+        });
+
+        document.getElementById('cancelNewSetup').addEventListener('click', () => {
+          showNewSetupForm = false;
+          pendingNewSetupName = '';
+          const form = document.getElementById('newSetupForm');
+          if (form) form.style.display = 'none';
         });
 
         document.getElementById('saveOnly').addEventListener('click', () => {
@@ -2572,28 +2646,16 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
           vscode.postMessage({ type: 'saveActiveSetup', payload: { setupId: state.activeSetupId, ...currentPayload(), createWorkspace: true } });
         });
 
-        document.getElementById('saveAsProfile').addEventListener('click', () => {
-          const profileName = window.prompt('New profile name');
-          if (!profileName || !profileName.trim()) {
-            return;
-          }
-          vscode.postMessage({ type: 'saveAsNewProfile', payload: { profileName: profileName.trim(), ...currentPayload(), createWorkspace: false } });
-        });
-
-        document.getElementById('updateProfile').addEventListener('click', () => {
-          vscode.postMessage({ type: 'saveActiveSetup', payload: { setupId: state.activeSetupId, ...currentPayload(), createWorkspace: false } });
-        });
-
-        document.getElementById('deleteProfile').addEventListener('click', () => {
-          if (!state.canDeleteProfile) {
-            return;
-          }
-          const profileName = state.activeSetupId.replace('profile:', '');
-          if (!window.confirm('Delete profile "' + profileName + '"?')) {
-            return;
-          }
-          vscode.postMessage({ type: 'deleteProfile', payload: { profileName } });
-        });
+        const deleteProfileBtn = document.getElementById('deleteProfile');
+        if (deleteProfileBtn) {
+          deleteProfileBtn.addEventListener('click', () => {
+            const profileName = state.activeSetupId.replace('profile:', '');
+            if (!window.confirm('Delete setup "' + profileName + '"?')) {
+              return;
+            }
+            vscode.postMessage({ type: 'deleteProfile', payload: { profileName } });
+          });
+        }
 
         document.getElementById('applyBulkStartup').addEventListener('click', () => {
           const value = document.getElementById('bulkStartup').value || '';
