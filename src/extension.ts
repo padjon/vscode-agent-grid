@@ -1469,7 +1469,6 @@ class AgentGridController implements vscode.Disposable {
       }
     }
 
-    this.outputChannel.show(true);
     await vscode.window.showInformationMessage('Agent Grid environment check written to the "Agent Grid" output channel.');
   }
 

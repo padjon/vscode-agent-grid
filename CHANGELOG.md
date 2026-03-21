@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.2
+
+- environment check no longer auto-switches to the output channel
+
 ## 1.3.1
 
 - fixed grid layout being reset when saving after switching setups or when background state refreshes occurred
