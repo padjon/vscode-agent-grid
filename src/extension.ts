@@ -2133,12 +2133,17 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
       let state;
+      let template;
       let showNewSetupForm = false;
       let pendingNewSetupName = '';
 
       window.addEventListener('message', (event) => {
         if (event.data?.type === 'state') {
+          const prevActiveSetupId = state?.activeSetupId;
           state = event.data.payload;
+          if (!template || state.activeSetupId !== prevActiveSetupId) {
+            template = structuredClone(state.template);
+          }
           showNewSetupForm = false;
           pendingNewSetupName = '';
           render();
@@ -2152,12 +2157,8 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
           return;
         }
 
-        const template = structuredClone(state.template);
         const setupOptions = state.availableSetups.map((item) =>
           '<option value="' + escapeHtml(item.id) + '"' + (item.id === state.activeSetupId ? ' selected' : '') + '>' + escapeHtml(item.label) + '</option>'
-        ).join('');
-        const starterOptions = state.starterTemplates.map((item) =>
-          '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.label) + '</option>'
         ).join('');
         const storageOptions = state.availableDestinations.map((item) =>
           '<option value="' + escapeHtml(item.value) + '"' + (item.value === state.selectedStorage ? ' selected' : '') + (item.disabled ? ' disabled' : '') + '>' + escapeHtml(item.label) + '</option>'
@@ -2185,9 +2186,6 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
           '</div>',
           '<div class="card stack">',
             '<div class="section-title">Workspace Setup</div>',
-            (state.starterTemplates.length > 0
-              ? '<label>Start from<select id="starter"><option value="">Keep current editor</option>' + starterOptions + '</select></label>'
-              : ''),
             '<div class="subtle-label">Shape starters</div>',
             '<div id="shapeStarters" class="starter-row"></div>',
             '<div class="subtle-label">Grid editor</div>',
@@ -2229,7 +2227,6 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
         const panesRoot = document.getElementById('panes');
         const hiddenPanesRoot = document.getElementById('hiddenPanes');
         const activeSetupSelect = document.getElementById('activeSetup');
-        const starterSelect = document.getElementById('starter');
         const shapeStarters = document.getElementById('shapeStarters');
         const gridEditor = document.getElementById('gridEditor');
         const gridRows = document.getElementById('gridRows');
@@ -2582,28 +2579,6 @@ class AgentGridSidebarWebviewProvider implements vscode.WebviewViewProvider, vsc
         activeSetupSelect.addEventListener('change', () => {
           vscode.postMessage({ type: 'selectActiveSetup', payload: { setupId: activeSetupSelect.value } });
         });
-
-        if (starterSelect) {
-          starterSelect.addEventListener('change', () => {
-            const selected = state.starterTemplates.find((item) => item.id === starterSelect.value);
-            if (!selected) {
-              return;
-            }
-            if (!window.confirm('Replace the current editor contents with this starter?')) {
-              starterSelect.value = '';
-              return;
-            }
-            template.layout = { kind: 'grid', grid: structuredClone(selected.template.layout.grid) };
-            template.terminals = structuredClone(selected.template.terminals);
-            ensurePaneCount(template.layout.grid.areas.length);
-            gridRows.value = String(template.layout.grid.rows);
-            gridCols.value = String(template.layout.grid.cols);
-            selectedCells = [];
-            renderGridEditor();
-            renderPanes();
-            starterSelect.value = '';
-          });
-        }
 
         gridRows.addEventListener('change', () => {
           applyUniformSize(Number(gridRows.value), Number(gridCols.value));

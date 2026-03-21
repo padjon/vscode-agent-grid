@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.1
+
+- fixed grid layout being reset when saving after switching setups or when background state refreshes occurred
+- removed the "Start from" dropdown from the sidebar editor
+
 ## 1.2.1
 
 - live draft application now opens the current unsaved sidebar setup as a workspace even when no Agent Grid session is running yet
